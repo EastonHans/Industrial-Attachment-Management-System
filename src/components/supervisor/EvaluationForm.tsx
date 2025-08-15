@@ -4,8 +4,8 @@ import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { Button } from "../ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/contexts/AuthContext";
+import { API_BASE_URL, tokenManager } from "@/services/djangoApi";
+import { useAuth } from "@/contexts/AuthContext_django";
 
 const assessmentAreas = [
   { key: "availability_of_documents", label: "Availability of required documents (5)", min: 1, max: 5 },
@@ -70,31 +70,83 @@ export default function EvaluationForm({ studentId, weekNumber, onSubmitted }: {
           if (!currentUser?.id) return;
           setLoading(true);
           try {
-            // Fetch latest attachment for the student
-            const { data: attachment, error: attError } = await supabase
-              .from('attachments')
-              .select('id')
-              .eq('student_id', studentId)
-              .order('created_at', { ascending: false })
-              .limit(1)
-              .single();
-            if (attError || !attachment?.id) {
+            // Fetch latest attachment for the student using Django API
+            const attachmentResponse = await fetch(`${API_BASE_URL}/attachments/?student=${studentId}`, {
+              headers: {
+                'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+                'Content-Type': 'application/json',
+              },
+            });
+            
+            if (!attachmentResponse.ok) {
+              toast({ title: "Error", description: "Failed to fetch attachment data. Cannot submit evaluation.", variant: "destructive" });
+              setLoading(false);
+              return;
+            }
+            
+            const attachmentData = await attachmentResponse.json();
+            const attachments = attachmentData.results || attachmentData;
+            
+            if (!attachments || attachments.length === 0) {
               toast({ title: "Error", description: "No attachment found for this student. Cannot submit evaluation.", variant: "destructive" });
               setLoading(false);
               return;
             }
-            const insertData: any = {
+            
+            const attachment = attachments[0]; // Get the first attachment
+            
+            // Get supervisor profile ID first
+            const supervisorResponse = await fetch(`${API_BASE_URL}/supervisors/?user_id=${currentUser.id}`, {
+              headers: {
+                'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+                'Content-Type': 'application/json',
+              },
+            });
+            
+            if (!supervisorResponse.ok) {
+              toast({ title: "Error", description: "Failed to get supervisor profile. Cannot submit evaluation.", variant: "destructive" });
+              setLoading(false);
+              return;
+            }
+            
+            const supervisorData = await supervisorResponse.json();
+            const supervisors = supervisorData.results || supervisorData;
+            
+            if (!supervisors || supervisors.length === 0) {
+              toast({ title: "Error", description: "No supervisor profile found. Cannot submit evaluation.", variant: "destructive" });
+              setLoading(false);
+              return;
+            }
+            
+            const supervisorProfile = supervisors[0];
+            
+            // Submit evaluation using Django API
+            // Note: evaluator is automatically set by perform_create in the viewset
+            const evaluationData = {
               student_id: studentId,
-              supervisor_id: currentUser.id,
-              evaluator_id: currentUser.id,
+              supervisor_id: supervisorProfile.id,
               attachment_id: attachment.id,
+              evaluation_date: new Date().toISOString().split('T')[0], // Today's date
+              performance_rating: form.availability_of_documents, // Map to performance_rating field
               ...form,
               total,
             };
-            if (weekNumber !== undefined) insertData.week_number = weekNumber;
-            const { error } = await supabase.from("evaluations").insert(insertData);
-            if (error) throw error;
-            toast({ title: "Evaluation Submitted", description: "The evaluation has been submitted." });
+            
+            const evaluationResponse = await fetch(`${API_BASE_URL}/evaluations/`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(evaluationData),
+            });
+            
+            if (!evaluationResponse.ok) {
+              const errorData = await evaluationResponse.json();
+              throw new Error(errorData.detail || 'Failed to submit evaluation');
+            }
+            
+            toast({ title: "Evaluation Submitted", description: "The evaluation has been submitted successfully." });
             onSubmitted?.();
           } catch (err: any) {
             toast({ title: "Error", description: err.message, variant: "destructive" });

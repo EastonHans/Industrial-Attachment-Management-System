@@ -1,0 +1,1 @@
+INSERT INTO "public"."companies" ("id", "name", "location", "industry", "description", "contact_email", "contact_phone", "created_at", "updated_at", "address") VALUES ('b1603348-fd38-48a0-8831-c8f9639eead2', 'Oracom Group Limited', 'Nairobi, Westlands', null, null, 'developer@oracom.co.ke', '+254729990583', '2025-07-02 03:31:15.737362+00', '2025-07-02 03:31:15.737362+00', null);

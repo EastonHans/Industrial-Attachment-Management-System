@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,14 +16,27 @@ const ForgotPassword = () => {
     setLoading(true);
     setMessage(null);
     setError(null);
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: window.location.origin + "/reset-password"
-    });
-    setLoading(false);
-    if (error) {
-      setError(error.message);
-    } else {
-      setMessage("If an account with that email exists, a password reset link has been sent.");
+    try {
+      const API_BASE_URL = import.meta.env.VITE_DJANGO_API_URL || 'http://localhost:8080/api';
+      const response = await fetch(`${API_BASE_URL}/auth/forgot-password/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email }),
+      });
+      
+      setLoading(false);
+      
+      if (response.ok) {
+        setMessage("If an account with that email exists, a password reset link has been sent.");
+      } else {
+        const data = await response.json();
+        setError(data.error || "Failed to send password reset email. Please try again.");
+      }
+    } catch (error) {
+      setLoading(false);
+      setError("Network error. Please check your connection and try again.");
     }
   };
 

@@ -3,7 +3,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext_django";
 import Index from "./pages/Index";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
@@ -32,7 +32,7 @@ const ProtectedRoute = ({
   }
   
   const isAuthenticated = !!currentUser;
-  const hasRequiredRole = !allowedRoles || (currentUser && allowedRoles.includes(currentUser.role));
+  const hasRequiredRole = !allowedRoles?.length || (currentUser && allowedRoles.includes(currentUser.role));
   
   if (!isAuthenticated || !hasRequiredRole) {
     return <Navigate to="/login" replace />;
@@ -70,7 +70,7 @@ const AppWithAuth = () => (
       element={
         <ProtectedRoute 
           element={<AdminDashboard />} 
-          allowedRoles={["admin"]} 
+          allowedRoles={["admin", "dean"]} 
         />
       } 
     />
@@ -83,7 +83,12 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <BrowserRouter>
+      <BrowserRouter
+        future={{
+          v7_startTransition: true,
+          v7_relativeSplatPath: true,
+        }}
+      >
         <AuthProvider>
           <AppWithAuth />
         </AuthProvider>

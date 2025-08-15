@@ -7,16 +7,25 @@
     
     <meta property="og:title" content="attachment-flow-central" />
     <meta property="og:type" content="website" />
-    <script
-    src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDUUl9Yh0QLo9x3mSbkNslOpRxJvjdz7jA&libraries=places"
-    async
-  ></script>
   </head>
 
   <body>
     <div id="root"></div>
     <!-- DO NOT REMOVE THIS SCRIPT TAG OR THIS VERY COMMENT! -->
     <script src="https://cdn.gpteng.co/gptengineer.js" type="module"></script>
-    
+    <script>
+      // Load Google Maps API with environment variable
+      (function() {
+        const apiKey = '%VITE_PUBLIC_GOOGLE_MAPS_API_KEY%';
+        if (apiKey && apiKey !== '%VITE_PUBLIC_GOOGLE_MAPS_API_KEY%') {
+          const script = document.createElement('script');
+          script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&loading=async`;
+          script.async = true;
+          script.defer = true;
+          document.head.appendChild(script);
+        }
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

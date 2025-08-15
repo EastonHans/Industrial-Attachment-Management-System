@@ -1,0 +1,25 @@
+Django==5.2.4
+djangorestframework==3.16.0
+django-cors-headers==4.7.0
+psycopg2-binary==2.9.10
+python-decouple==3.8
+djangorestframework-simplejwt==5.5.1
+Pillow==10.4.0
+
+# OCR Dependencies
+pytesseract==0.3.10
+pdf2image==1.17.0
+PyPDF2==3.0.1
+opencv-python==4.8.1.78
+numpy==1.24.3
+
+# Advanced PDF Processing
+PyMuPDF==1.23.26  # fitz
+pdfplumber==0.10.3
+pdfminer.six==20231228
+
+# Enhanced OCR Dependencies
+pdf2image==1.17.0  # For converting PDF to images
+python-doctr[torch]==0.8.1  # Advanced OCR with deep learning (optional)
+easyocr==1.7.0  # Alternative OCR engine (optional)
+scikit-image==0.21.0  # Advanced image preprocessing

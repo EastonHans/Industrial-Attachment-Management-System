@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
@@ -16,8 +16,9 @@ import {
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/AuthContext_django";
 
 // Define form schema
 const registerSchema = z.object({
@@ -31,6 +32,7 @@ const registerSchema = z.object({
   studentId: z.string().optional(),
   program: z.string().optional(),
   yearOfStudy: z.number().optional(),
+  attachmentPeriod: z.enum(["Jan-Apr", "May-Aug", "Sep-Dec"]).optional(),
   // Supervisor fields (optional)
   department: z.string().optional(),
   title: z.string().optional(),
@@ -48,7 +50,7 @@ const registerSchema = z.object({
     return true;
   },
   {
-    message: "Student ID, Program and Year of Study are required for students",
+    message: "Student ID, Program, and Year of Study are required for students",
     path: ["studentId"],
   }
 );
@@ -59,6 +61,7 @@ const Register = () => {
   const navigate = useNavigate();
   const { register: registerUser } = useAuth();
   const [selectedRole, setSelectedRole] = useState<"student" | "supervisor">("student");
+  const [loading, setLoading] = useState(false);
   
   // Initialize form with react-hook-form
   const form = useForm<RegisterFormValues>({
@@ -73,13 +76,20 @@ const Register = () => {
       studentId: "",
       program: "",
       yearOfStudy: 1,
+      attachmentPeriod: "Jan-Apr" as const,
       department: "",
       title: "",
       phoneNumber: "",
     },
   });
 
-  const [loading, setLoading] = useState(false);
+  // Watch the role field to keep selectedRole in sync
+  const watchedRole = form.watch("role");
+  
+  // Update selectedRole when form role changes
+  React.useEffect(() => {
+    setSelectedRole(watchedRole);
+  }, [watchedRole]);
 
   // Handle form submission
   const onSubmit = async (values: RegisterFormValues) => {
@@ -89,14 +99,16 @@ const Register = () => {
       const userData = {
         email: values.email,
         password: values.password,
-        firstName: values.firstName,
-        lastName: values.lastName,
+        password_confirm: values.confirmPassword,
+        first_name: values.firstName,
+        last_name: values.lastName,
         role: values.role,
+        phone_number: values.phoneNumber,
         ...(values.role === "student" && {
-          studentId: values.studentId,
+          student_id: values.studentId,
           program: values.program,
-          yearOfStudy: values.yearOfStudy,
-          phoneNumber: values.phoneNumber,
+          year_of_study: values.yearOfStudy,
+          attachment_period: values.attachmentPeriod,
         }),
         ...(values.role === "supervisor" && {
           department: values.department,
@@ -106,13 +118,7 @@ const Register = () => {
       
       await registerUser(userData);
       
-      toast({
-        title: "Registration Successful",
-        description: "Please check your email to confirm your account before logging in.",
-      });
-      
-      // Redirect to login
-      navigate("/login");
+      // Note: Success message and redirect are handled by AuthContext
     } catch (error: any) {
       toast({
         title: "Registration Failed",
@@ -223,7 +229,7 @@ const Register = () => {
               />
               
               {/* Student-specific fields */}
-              {selectedRole === "student" && (
+              {watchedRole === "student" && (
                 <>
                   <FormField
                     control={form.control}
@@ -272,6 +278,29 @@ const Register = () => {
                       </FormItem>
                     )}
                   />
+
+                  <FormField
+                    control={form.control}
+                    name="attachmentPeriod"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Attachment Period</FormLabel>
+                        <Select onValueChange={field.onChange} defaultValue={field.value}>
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select attachment period" />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            <SelectItem value="Jan-Apr">January - April</SelectItem>
+                            <SelectItem value="May-Aug">May - August</SelectItem>
+                            <SelectItem value="Sep-Dec">September - December</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
                   
                   <FormField
                     control={form.control}
@@ -290,7 +319,7 @@ const Register = () => {
               )}
               
               {/* Supervisor-specific fields */}
-              {selectedRole === "supervisor" && (
+              {watchedRole === "supervisor" && (
                 <>
                   <FormField
                     control={form.control}
@@ -341,13 +370,18 @@ const Register = () => {
           </Form>
         </CardContent>
         
-        <CardFooter className="flex justify-center">
-          <p className="text-sm text-gray-600">
+        <CardFooter className="flex flex-col space-y-4">
+          <p className="text-sm text-gray-600 text-center">
             Already have an account?{" "}
             <Link to="/login" className="text-blue-600 hover:text-blue-500">
               Sign in
             </Link>
           </p>
+          <div className="text-sm text-center pt-2 border-t">
+            <Link to="/" className="text-muted-foreground hover:text-primary hover:underline">
+              ← Back to Home
+            </Link>
+          </div>
         </CardFooter>
       </Card>
     </div>

@@ -1,9 +1,10 @@
 
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/AuthContext_django";
 import { Button } from "@/components/ui/button";
-import { Bell, Menu, X } from "lucide-react";
+import { Menu, X } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import MessageNotifications from "@/components/ui/MessageNotifications";
 
 interface NavBarProps {
   title: string;
@@ -29,11 +30,9 @@ const NavBar = ({ title }: NavBarProps) => {
           {currentUser ? (
             <>
               <div className="text-sm text-gray-600 mr-4">
-                Hello, {currentUser.firstName} {currentUser.lastName}
+                Hello, {currentUser.first_name} {currentUser.last_name}
               </div>
-              <Button variant="ghost" size="icon">
-                <Bell className="h-5 w-5" />
-              </Button>
+              <MessageNotifications />
               {currentUser.role === "student" && (
                 <Link to="/student/dashboard">
                   <Button variant="ghost">Dashboard</Button>
@@ -44,7 +43,7 @@ const NavBar = ({ title }: NavBarProps) => {
                   <Button variant="ghost">Dashboard</Button>
                 </Link>
               )}
-              {currentUser.role === "admin" && (
+              {(currentUser.role === "admin" || currentUser.role === "dean") && (
                 <Link to="/admin/dashboard">
                   <Button variant="ghost">Dashboard</Button>
                 </Link>
@@ -66,7 +65,8 @@ const NavBar = ({ title }: NavBarProps) => {
         </div>
         
         {/* Mobile menu button */}
-        <div className="md:hidden">
+        <div className="md:hidden flex items-center gap-2">
+          {currentUser && <MessageNotifications />}
           <Button variant="ghost" size="icon" onClick={toggleMenu}>
             {isMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </Button>
@@ -79,7 +79,7 @@ const NavBar = ({ title }: NavBarProps) => {
           {currentUser ? (
             <div className="flex flex-col space-y-3">
               <div className="text-sm text-gray-600 mb-2">
-                Hello, {currentUser.firstName} {currentUser.lastName}
+                Hello, {currentUser.first_name} {currentUser.last_name}
               </div>
               {currentUser.role === "student" && (
                 <Link to="/student/dashboard" className="w-full">
@@ -91,15 +91,11 @@ const NavBar = ({ title }: NavBarProps) => {
                   <Button variant="ghost" className="w-full justify-start">Dashboard</Button>
                 </Link>
               )}
-              {currentUser.role === "admin" && (
+              {(currentUser.role === "admin" || currentUser.role === "dean") && (
                 <Link to="/admin/dashboard" className="w-full">
                   <Button variant="ghost" className="w-full justify-start">Dashboard</Button>
                 </Link>
               )}
-              <Button variant="ghost" className="justify-start">
-                <Bell className="h-5 w-5 mr-2" />
-                Notifications
-              </Button>
               <Button variant="outline" onClick={() => logout()} disabled={isLoading} className="w-full">
                 Sign Out
               </Button>

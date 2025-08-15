@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../contexts/AuthContext_django';
 import { processTranscriptFile, TranscriptVerificationResult } from '../utils/transcriptProcessor';
 import { generateIntroductoryLetter, generateInsuranceLetter, downloadLetter } from '../utils/letterGenerator';
 

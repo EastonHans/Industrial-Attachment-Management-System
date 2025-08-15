@@ -46,7 +46,7 @@ export const checkYearAndSemester = (
   }
 };
 
-// Enhanced name matching with better logging
+// Enhanced name matching with fuzzy logic and multiple algorithms
 export const checkNameMatch = (
   registeredName: string, 
   transcriptName: string
@@ -61,54 +61,94 @@ export const checkNameMatch = (
   const regNameLower = registeredName.toLowerCase().trim();
   const transNameLower = transcriptName.toLowerCase().trim();
   
-  console.log(`=== NAME MATCHING PROCESS ===`);
+  console.log(`=== FUZZY NAME MATCHING PROCESS ===`);
   console.log(`Registered name: "${regNameLower}"`);
   console.log(`Transcript name: "${transNameLower}"`);
   
-  // Direct match
+  // Method 1: Direct exact match
   if (regNameLower === transNameLower) {
     console.log('✓ MATCH: Direct exact match');
     return true;
   }
   
-  // Check if one name is contained in the other
+  // Method 2: Substring containment
   if (regNameLower.includes(transNameLower) || transNameLower.includes(regNameLower)) {
     console.log('✓ MATCH: One name contains the other');
     return true;
   }
   
-  // Split names into parts and check for matches
+  // Method 3: Fuzzy string similarity (overall)
+  const overallSimilarity = calculateJaroWinklerSimilarity(regNameLower, transNameLower);
+  console.log(`Overall Jaro-Winkler similarity: ${overallSimilarity.toFixed(3)}`);
+  
+  if (overallSimilarity >= 0.85) {
+    console.log('✓ MATCH: High overall string similarity');
+    return true;
+  }
+  
+  // Method 4: Split names into parts and use multiple algorithms
   const regNameParts = regNameLower.split(/\s+/).filter(part => part.length > 1);
   const transNameParts = transNameLower.split(/\s+/).filter(part => part.length > 1);
   
   console.log(`Registered name parts: [${regNameParts.join(', ')}]`);
   console.log(`Transcript name parts: [${transNameParts.join(', ')}]`);
   
-  // Check if at least 40% of name parts match (reduced from 60%)
+  // Enhanced fuzzy matching for individual parts
   let matches = 0;
+  let weightedScore = 0;
   let matchDetails = [];
   
   for (const regPart of regNameParts) {
-    const matchingPart = transNameParts.find(transPart => {
-      const isSubstring = transPart.includes(regPart) || regPart.includes(transPart);
-      const isClose = calculateLevenshteinDistance(regPart, transPart) <= 3; // Increased from 2 to 3
-      return isSubstring || isClose;
-    });
+    let bestMatch = null;
+    let bestScore = 0;
+    
+    for (const transPart of transNameParts) {
+      // Multiple similarity algorithms
+      const levenshtein = 1 - (calculateLevenshteinDistance(regPart, transPart) / Math.max(regPart.length, transPart.length));
+      const jaroWinkler = calculateJaroWinklerSimilarity(regPart, transPart);
+      const substring = transPart.includes(regPart) || regPart.includes(transPart) ? 1 : 0;
       
-    if (matchingPart) {
+      // Weighted combination of algorithms
+      const combinedScore = (levenshtein * 0.4) + (jaroWinkler * 0.4) + (substring * 0.2);
+      
+      if (combinedScore > bestScore && combinedScore >= 0.6) {
+        bestScore = combinedScore;
+        bestMatch = transPart;
+      }
+    }
+    
+    if (bestMatch) {
       matches++;
-      matchDetails.push(`"${regPart}" ↔ "${matchingPart}"`);
+      weightedScore += bestScore;
+      matchDetails.push(`"${regPart}" ↔ "${bestMatch}" (${bestScore.toFixed(2)})`);
     }
   }
   
   const matchRatio = matches / Math.max(regNameParts.length, transNameParts.length, 1);
-  console.log(`Matches found: ${matches}/${Math.max(regNameParts.length, transNameParts.length)}`);
-  console.log(`Match ratio: ${matchRatio.toFixed(2)} (need ≥ 0.4)`);
+  const averageScore = matches > 0 ? weightedScore / matches : 0;
+  
+  console.log(`Part matches: ${matches}/${Math.max(regNameParts.length, transNameParts.length)}`);
+  console.log(`Match ratio: ${matchRatio.toFixed(2)} (need ≥ 0.5)`);
+  console.log(`Average similarity score: ${averageScore.toFixed(2)} (need ≥ 0.7)`);
   console.log(`Match details: ${matchDetails.join(', ')}`);
   
-  const isMatch = matchRatio >= 0.4; // Reduced from 0.6 to 0.4
-  console.log(`${isMatch ? '✓' : '✗'} Final result: ${isMatch ? 'MATCH' : 'NO MATCH'}`);
-  console.log(`=== END NAME MATCHING ===`);
+  // Method 5: Initials matching (fallback for very different OCR)
+  const regInitials = regNameParts.map(part => part[0]).join('');
+  const transInitials = transNameParts.map(part => part[0]).join('');
+  const initialsMatch = regInitials === transInitials && regInitials.length >= 2;
+  
+  if (initialsMatch) {
+    console.log(`✓ Initials match: "${regInitials}" (fallback for poor OCR)`);
+  }
+  
+  // Final decision with multiple criteria
+  const isMatch = (matchRatio >= 0.5 && averageScore >= 0.7) || 
+                  overallSimilarity >= 0.85 || 
+                  (matchRatio >= 0.4 && averageScore >= 0.8) ||
+                  initialsMatch;
+  
+  console.log(`${isMatch ? '✓' : '✗'} Final fuzzy result: ${isMatch ? 'MATCH' : 'NO MATCH'}`);
+  console.log(`=== END FUZZY NAME MATCHING ===`);
   
   return isMatch;
 };
@@ -144,6 +184,57 @@ const calculateLevenshteinDistance = (a: string, b: string): number => {
   }
   
   return matrix[b.length][a.length];
+};
+
+// Calculate Jaro-Winkler similarity between two strings
+// This is more forgiving for name matching than Levenshtein distance
+const calculateJaroWinklerSimilarity = (s1: string, s2: string): number => {
+  if (s1 === s2) return 1.0;
+  if (s1.length === 0 || s2.length === 0) return 0.0;
+
+  // Calculate Jaro similarity first
+  const matchWindow = Math.floor(Math.max(s1.length, s2.length) / 2) - 1;
+  const s1Matches = new Array(s1.length).fill(false);
+  const s2Matches = new Array(s2.length).fill(false);
+  
+  let matches = 0;
+  let transpositions = 0;
+
+  // Find matches
+  for (let i = 0; i < s1.length; i++) {
+    const start = Math.max(0, i - matchWindow);
+    const end = Math.min(i + matchWindow + 1, s2.length);
+    
+    for (let j = start; j < end; j++) {
+      if (s2Matches[j] || s1[i] !== s2[j]) continue;
+      s1Matches[i] = true;
+      s2Matches[j] = true;
+      matches++;
+      break;
+    }
+  }
+
+  if (matches === 0) return 0.0;
+
+  // Count transpositions
+  let k = 0;
+  for (let i = 0; i < s1.length; i++) {
+    if (!s1Matches[i]) continue;
+    while (!s2Matches[k]) k++;
+    if (s1[i] !== s2[k]) transpositions++;
+    k++;
+  }
+
+  const jaro = (matches / s1.length + matches / s2.length + (matches - transpositions / 2) / matches) / 3;
+
+  // Calculate Winkler bonus for common prefix (up to 4 characters)
+  const prefix = Math.min(4, Math.max(s1.length, s2.length));
+  let commonPrefix = 0;
+  for (let i = 0; i < prefix && s1[i] === s2[i]; i++) {
+    commonPrefix++;
+  }
+
+  return jaro + (0.1 * commonPrefix * (1 - jaro));
 };
 
 // Adding this function to use the actual uploaded file

@@ -14,10 +14,12 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/AuthContext_django";
 import { toast } from "@/hooks/use-toast";
+import { checkServerHealth, createConnectionErrorMessage } from "@/utils/serverHealthCheck";
 import { Loader2 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+
 
 // Define form schema
 const loginSchema = z.object({
@@ -37,13 +39,10 @@ const Login = () => {
   const [loginAttempted, setLoginAttempted] = useState(false);
   const [loginStartTime, setLoginStartTime] = useState<number | null>(null);
   
-  console.log("Login page rendered. Current user:", currentUser ? "authenticated" : "not authenticated");
-  console.log("Is loading:", isLoading);
   
   // Check if user is already logged in
   useEffect(() => {
     if (currentUser) {
-      console.log("User already logged in, redirecting to dashboard");
       // Redirect based on role if already logged in
       switch (currentUser.role) {
         case "student":
@@ -75,18 +74,30 @@ const Login = () => {
   // Handle form submission
   const onSubmit = async (values: LoginFormValues) => {
     try {
-      console.log("Attempting login with:", values.email, values.role);
       setLoginAttempted(true);
       setLoginStartTime(Date.now());
       await login(values.email, values.password);
       // Note: Redirect is handled in the AuthContext and the useEffect above
     } catch (error) {
-      console.error("Login submission error:", error);
-      toast({
-        title: "Login Failed",
-        description: "Please check your credentials and try again",
-        variant: "destructive",
-      });
+      
+      // Check if it's a server connection issue
+      const healthCheck = await checkServerHealth();
+      
+      if (!healthCheck.isHealthy) {
+        const connectionMessage = createConnectionErrorMessage(healthCheck);
+        toast({
+          title: "Server Connection Issue",
+          description: connectionMessage,
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Unable to Sign In",
+          description: "Please check your email and password and try again.",
+          variant: "destructive",
+        });
+      }
+      
       setLoginAttempted(false);
       setLoginStartTime(null);
     }
@@ -184,6 +195,11 @@ const Login = () => {
             Don't have an account?{" "}
             <Link to="/register" className="text-primary font-semibold hover:underline">
               Register here
+            </Link>
+          </div>
+          <div className="text-sm text-center pt-2 border-t">
+            <Link to="/" className="text-muted-foreground hover:text-primary hover:underline">
+              ← Back to Home
             </Link>
           </div>
         </CardFooter>

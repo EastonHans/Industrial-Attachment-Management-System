@@ -6,9 +6,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { ClipboardList, Bell, FileText, Users } from "lucide-react";
-import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
-import { Database } from "@/integrations/supabase/types";
+import { useAuth } from "@/contexts/AuthContext_django";
+import { supabase, API_BASE_URL, tokenManager } from "@/services/djangoApi";
 import { ProfileSettings } from "@/components/ProfileSettings";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -17,14 +16,36 @@ import { Label } from "@/components/ui/label";
 import EvaluationForm from "@/components/supervisor/EvaluationForm";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
 import { format } from 'date-fns';
-import { NotificationPopover } from "@/components/ui/notification-popover";
+import NavBar from "@/components/layout/NavBar";
 
-type Supervisor = Database["public"]["Tables"]["supervisors"]["Row"] & {
-  profile: Database["public"]["Tables"]["profiles"]["Row"];
+type Profile = {
+  id: string;
+  first_name: string;
+  last_name: string;
+  phone_number?: string;
+  created_at: string;
+  updated_at: string;
 };
 
-type Student = Database["public"]["Tables"]["students"]["Row"] & {
-  profile: Database["public"]["Tables"]["profiles"]["Row"];
+type Supervisor = {
+  id: string;
+  user_id: string;
+  created_at: string;
+  updated_at: string;
+  profile: Profile;
+};
+
+type Student = {
+  id: string;
+  user_id: string;
+  student_id: string;
+  program: string;
+  year_of_study: number;
+  semester: number;
+  phone_number?: string;
+  created_at: string;
+  updated_at: string;
+  profile: Profile;
 };
 
 type Report = {
@@ -56,7 +77,7 @@ interface SupabaseStudentJoin {
   year_of_study: string;
   created_at?: string;
   updated_at?: string;
-  profile: Array<Database["public"]["Tables"]["profiles"]["Row"]> | Database["public"]["Tables"]["profiles"]["Row"];
+  profile: Profile[] | Profile;
 }
 
 // Utility to get the first object from any array or nested array
@@ -69,15 +90,18 @@ function getFirst<T>(val: T | T[] | (T | T[])[]): T | null {
 }
 
 // Add helper functions at the top of the file
-function getCompanyName(company: any): string {
-  if (!company) return 'No company info submitted';
-  if (Array.isArray(company)) return company[0]?.name || 'N/A';
-  return company.name || 'N/A';
+function getCompanyName(attachment: any): string {
+  if (!attachment) return 'No company info submitted';
+  // Django API returns company object directly
+  if (attachment.company?.name) return attachment.company.name;
+  return 'No company info submitted';
 }
-function getCompanyLocation(company: any): string {
-  if (!company) return 'No company info submitted';
-  if (Array.isArray(company)) return company[0]?.location || company[0]?.address || 'N/A';
-  return company.location || company.address || 'N/A';
+function getCompanyLocation(attachment: any): string {
+  if (!attachment) return 'No company info submitted';
+  // Django API returns company object directly
+  if (attachment.company?.location) return attachment.company.location;
+  if (attachment.company?.address) return attachment.company.address;
+  return 'No company info submitted';
 }
 
 const SupervisorDashboard = () => {
@@ -115,10 +139,9 @@ const SupervisorDashboard = () => {
   const [messageContent, setMessageContent] = useState("");
   const [messageSending, setMessageSending] = useState(false);
   const [showMessageModal, setShowMessageModal] = useState(false);
-  const [messages, setMessages] = useState<any[]>([]);
   const messageInputRef = useRef(null);
   const [attachmentsByStudent, setAttachmentsByStudent] = useState<Record<string, any>>({});
-  const [unreadCount, setUnreadCount] = useState(0);
+  const [supervisorEvaluations, setSupervisorEvaluations] = useState<Record<string, any>>({});
 
   useEffect(() => {
     const fetchSupervisorData = async () => {
@@ -130,70 +153,111 @@ const SupervisorDashboard = () => {
       try {
         console.log("Fetching supervisor data for user:", currentUser.id);
         
-        // Fetch supervisor details
-        const { data: supervisorData, error: supervisorError } = await supabase
-          .from("supervisors")
-          .select(`
-            *,
-            profile:profiles(*)
-          `)
-          .eq("id", currentUser.id)
-          .single();
-
-        if (supervisorError) {
+        // Fetch supervisor details using Django API by user_id
+        const token = tokenManager.getAccessToken();
+        console.log('🔒 Supervisor Dashboard: Current user ID:', currentUser.id, 'Token exists:', !!token, token ? `Token preview: ${token.substring(0, 20)}...` : 'No token');
+        
+        // First, get the supervisor by user_id instead of supervisor id
+        const supervisorListResponse = await fetch(`${API_BASE_URL}/supervisors/?user_id=${currentUser.id}`, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        });
+        
+        console.log('🔒 Supervisor List API Response:', supervisorListResponse.status, supervisorListResponse.statusText);
+        
+        // Handle supervisor lookup results
+        let currentSupervisorData = null;
+        if (supervisorListResponse.ok) {
+          const supervisorList = await supervisorListResponse.json();
+          if (supervisorList.results && supervisorList.results.length > 0) {
+            currentSupervisorData = supervisorList.results[0];
+            setSupervisor(currentSupervisorData);
+            console.log("Supervisor data:", currentSupervisorData);
+          } else {
+            throw new Error('No supervisor found for this user');
+          }
+        } else {
+          const supervisorError = { message: `HTTP ${supervisorListResponse.status}` };
           console.error("Error fetching supervisor:", supervisorError);
+          
+          // If supervisor not found (404), it means user was deleted from database
+          if (supervisorError.message?.includes("not found") || supervisorError.message?.includes("404")) {
+            console.warn("Supervisor not found in database - user may have been deleted");
+            toast({
+              title: "Account Not Found",
+              description: "Your account appears to have been removed. Please contact the administrator.",
+              variant: "destructive",
+            });
+            // Clear session and redirect to login
+            logout();
+            return;
+          }
+          
           throw supervisorError;
         }
-
-        if (!supervisorData) {
-          throw new Error("Supervisor not found");
+        
+        if (!currentSupervisorData) {
+          throw new Error('Supervisor data not available for fetching assignments');
         }
-
-        console.log("Supervisor data:", supervisorData);
-        setSupervisor(supervisorData);
-
-        // Fetch assigned students
-        const { data: assignmentsData, error: assignmentsError } = await supabase
-          .from("supervisor_assignments")
-          .select(`
-            id,
-            status,
-            student:students(
-              id,
-              student_id,
-              program,
-              year_of_study,
-              profile:profiles(
-                id,
-                first_name,
-                last_name,
-                email,
-                phone_number
-              )
-            )
-          `)
-          .eq("supervisor_id", currentUser.id);
+        
+        const assignmentsResponse = await fetch(`${API_BASE_URL}/supervisor-assignments/?supervisor=${currentSupervisorData.id}`, {
+          headers: {
+            'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+            'Content-Type': 'application/json',
+          },
+        });
+        
+        let assignmentsData = null;
+        let assignmentsError = null;
+        
+        if (assignmentsResponse.ok) {
+          assignmentsData = await assignmentsResponse.json();
+        } else {
+          assignmentsError = { message: `HTTP ${assignmentsResponse.status}` };
+        }
 
         if (assignmentsError) {
           console.error("Error fetching assignments:", assignmentsError);
-          throw assignmentsError;
-        }
-
-        if (assignmentsData) {
+          
+          // Handle case where supervisor assignments endpoint returns 404
+          if (assignmentsError.message?.includes("not found") || assignmentsError.message?.includes("404")) {
+            console.warn("Supervisor assignments not found - user may not have any assignments or may have been deleted");
+            // Don't throw error, just log and continue with empty assignments
+            setStudents([]);
+          } else {
+            throw assignmentsError;
+          }
+        } else if (assignmentsData) {
           console.log("Assignments data:", assignmentsData);
-          const studentsList = assignmentsData
-            .map(a => {
-              let student = getFirst(a.student) as SupabaseStudentJoin | null;
+          const assignments = assignmentsData.results || assignmentsData;
+          const studentsList = assignments
+            .map((assignment: any) => {
+              const student = assignment.student_detail;
               if (!student || typeof student !== 'object') return null;
-              const profile = getFirst(student.profile) as Database["public"]["Tables"]["profiles"]["Row"] | null;
               return {
                 id: student.id,
+                user_id: student.user_id,
                 student_id: student.student_id,
                 program: student.program,
+                program_type: student.program_type,
+                faculty: student.faculty,
+                department: student.department,
                 year_of_study: student.year_of_study,
-                created_at: student.created_at ?? '',
-                updated_at: student.updated_at ?? '',
-                profile: profile as Database["public"]["Tables"]["profiles"]["Row"],
+                semester: student.semester,
+                phone_number: student.phone_number,
+                created_at: student.created_at || '',
+                updated_at: student.updated_at || '',
+                profile: {
+                  id: student.user?.id || '',
+                  first_name: student.user?.first_name || '',
+                  last_name: student.user?.last_name || '',
+                  phone_number: student.phone_number || '',
+                  email: student.user?.email || '',
+                  created_at: '',
+                  updated_at: '',
+                },
               };
             })
             .filter(Boolean) as Student[];
@@ -217,43 +281,83 @@ const SupervisorDashboard = () => {
 
   useEffect(() => {
     const fetchEvaluations = async () => {
-      if (!currentUser) return;
-      const { data, error } = await supabase
-        .from('evaluations')
-        .select(`*, student:students(id, student_id, profile:profiles(id, first_name, last_name)), created_at`)
-        .eq('supervisor_id', currentUser.id)
-        .order('created_at', { ascending: false });
-      if (!error && data) setEvaluations(data);
+      if (!currentUser || !supervisor?.id) return;
+      try {
+        const response = await fetch(`${API_BASE_URL}/evaluations/?evaluator=${currentUser.id}`, {
+          headers: {
+            'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+            'Content-Type': 'application/json',
+          },
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          const evaluationsList = data.results || data;
+          setEvaluations(evaluationsList);
+          
+          // Also fetch evaluations where this supervisor was the evaluator
+          const evaluatorResponse = await fetch(`${API_BASE_URL}/evaluations/?evaluator=${currentUser.id}`, {
+            headers: {
+              'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+              'Content-Type': 'application/json',
+            },
+          });
+          
+          if (evaluatorResponse.ok) {
+            const evaluatorData = await evaluatorResponse.json();
+            const supervisorEvals = evaluatorData.results || evaluatorData;
+            const evalMap: Record<string, any> = {};
+            supervisorEvals.forEach((evaluation: any) => {
+              const studentId = evaluation.student?.id || evaluation.student;
+              if (studentId) {
+                evalMap[studentId] = evaluation;
+              }
+            });
+            setSupervisorEvaluations(evalMap);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching evaluations:', error);
+      }
     };
     fetchEvaluations();
-  }, [currentUser]);
+  }, [currentUser, supervisor]);
 
-  useEffect(() => {
-    if (!currentUser) return;
-    const fetchMessages = async () => {
-      const { data } = await supabase
-        .from("messages")
-        .select("*, sender:profiles(id, first_name, last_name), read")
-        .eq("receiver_id", currentUser.id)
-        .order("created_at", { ascending: false });
-      setMessages(data || []);
-      setUnreadCount((data || []).filter((msg: any) => !msg.read).length);
-    };
-    fetchMessages();
-  }, [currentUser]);
 
   useEffect(() => {
     if (students.length === 0) return;
     const fetchAllAttachments = async () => {
-      const studentIds = students.map(s => s.id);
-      const { data, error } = await supabase
-        .from('attachments')
-        .select('*, company:companies(name, location, address)')
-        .in('student_id', studentIds);
-      if (!error && data) {
-        const map: Record<string, any> = {};
-        data.forEach(att => { map[att.student_id] = att; });
-        setAttachmentsByStudent(map);
+      try {
+        const response = await fetch(`${API_BASE_URL}/attachments/`, {
+          headers: {
+            'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+            'Content-Type': 'application/json',
+          },
+        });
+        
+        if (response.ok) {
+          const attachments = await response.json();
+          const attachmentsList = attachments.results || attachments;
+          const map: Record<string, any> = {};
+          attachmentsList.forEach((att: any) => { 
+            // Handle different possible student data structures
+            const studentId = att.student?.id || att.student_id || att.student;
+            if (studentId) {
+              map[studentId] = att;
+            }
+            console.log('Processing attachment:', {
+              attachmentId: att.id,
+              studentId: studentId,
+              studentObject: att.student,
+              companyName: att.company?.name
+            });
+          });
+          console.log('Final attachments mapping:', map);
+          console.log('Current students:', students.map((s: any) => ({ id: s.id, name: s.profile?.first_name })));
+          setAttachmentsByStudent(map);
+        }
+      } catch (error) {
+        console.error('Error fetching attachments:', error);
       }
     };
     fetchAllAttachments();
@@ -279,23 +383,33 @@ const SupervisorDashboard = () => {
       setStudentLogs([]);
       setStudentAttachment(null);
       if (student) {
-        // Fetch logs
-        const { data: logs } = await supabase
-          .from("weekly_logs")
-          .select("*")
-          .eq("student_id", student.id)
-          .order("date", { ascending: true });
-        setStudentLogs(logs || []);
-        // Fetch attachment and company
-        const { data: attachment } = await supabase
-          .from("attachments")
-          .select("*, company:companies(name, location, address)")
-          .eq("student_id", student.id)
-          .single();
-        console.log('Attachment:', attachment);
-        if (attachment && attachment.company) {
-          console.log('Company:', attachment.company);
+        // Fetch logs using Django API
+        try {
+          const logsResponse = await fetch(`${API_BASE_URL}/weekly-logs/?student=${student.id}`, {
+            headers: {
+              'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+              'Content-Type': 'application/json',
+            },
+          });
+          if (logsResponse.ok) {
+            const logsData = await logsResponse.json();
+            const logsList = logsData.results || logsData;
+            setStudentLogs(logsList || []);
+          }
+        } catch (error) {
+          console.error('Error fetching weekly logs:', error);
+          setStudentLogs([]);
         }
+        
+        // Use existing attachment data from attachmentsByStudent
+        const attachment = attachmentsByStudent[student.id];
+        console.log('Setting student attachment:', {
+          studentId: student.id,
+          studentName: student.profile?.first_name,
+          attachmentFound: !!attachment,
+          attachmentCompany: attachment?.company?.name,
+          availableAttachments: Object.keys(attachmentsByStudent)
+        });
         setStudentAttachment(attachment || null);
       }
     }
@@ -305,14 +419,22 @@ const SupervisorDashboard = () => {
     setEvalStudentId(studentId);
     setEvalWeek(week);
     setShowEvalModal(true);
-    // Fetch the log entry for this student and week
-    supabase
-      .from("weekly_logs")
-      .select("*")
-      .eq("student_id", studentId)
-      .eq("week_number", week)
-      .single()
-      .then(({ data }) => setEvalLog(data));
+    // Fetch the log entry for this student and week using Django API
+    fetch(`${API_BASE_URL}/weekly-logs/?student=${studentId}&week_number=${week}`, {
+      headers: {
+        'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+        'Content-Type': 'application/json',
+      },
+    })
+    .then(response => response.json())
+    .then(data => {
+      const logsList = data.results || data;
+      setEvalLog(logsList.length > 0 ? logsList[0] : null);
+    })
+    .catch(error => {
+      console.error('Error fetching weekly log:', error);
+      setEvalLog(null);
+    });
   };
 
   if (loading) {
@@ -347,31 +469,7 @@ const SupervisorDashboard = () => {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <header className="bg-white shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
-          <h1 className="text-xl font-semibold text-gray-900">Supervisor Dashboard</h1>
-          <div className="flex items-center gap-4">
-            <NotificationPopover
-              messages={messages}
-              unreadCount={unreadCount}
-              onReply={async (msg, reply) => {
-                await supabase.from("messages").insert({ sender_id: currentUser.id, receiver_id: msg.sender.id, content: reply });
-                setUnreadCount(c => c + 1);
-              }}
-              onViewAll={() => {
-                // Optionally navigate to settings/messages tab
-                document.querySelector('button[value="settings"]')?.click();
-              }}
-            />
-            <Button 
-              variant="outline" 
-              onClick={() => logout()}
-            >
-              Sign Out
-            </Button>
-          </div>
-        </div>
-      </header>
+      <NavBar title="Supervisor Dashboard" />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="flex flex-col md:flex-row gap-6">
@@ -379,13 +477,13 @@ const SupervisorDashboard = () => {
           <div className="w-full md:w-1/4">
             <Card>
               <CardHeader>
-                <CardTitle>{supervisor.profile.first_name} {supervisor.profile.last_name}</CardTitle>
+                <CardTitle>{supervisor.user?.first_name || 'Unknown'} {supervisor.user?.last_name || 'Supervisor'}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
                   <div>
                     <p className="text-sm font-medium">Department</p>
-                    <p className="text-sm text-muted-foreground">{supervisor.department}</p>
+                    <p className="text-sm text-muted-foreground">{supervisor.department || 'Not specified'}</p>
                   </div>
                   <div>
                     <p className="text-sm font-medium">Students Assigned</p>
@@ -430,67 +528,108 @@ const SupervisorDashboard = () => {
                           <TableRow>
                             <TableHead>Student ID</TableHead>
                             <TableHead>Name</TableHead>
+                            <TableHead>Phone</TableHead>
                             <TableHead>Program</TableHead>
                             <TableHead>Year</TableHead>
+                            <TableHead>My Evaluation</TableHead>
                             <TableHead>Company</TableHead>
                             <TableHead>Company Location</TableHead>
-                            <TableHead>Action</TableHead>
+                            <TableHead>Attachment Period</TableHead>
+                            <TableHead>Actions</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
                           {students.map((student) => (
                             <TableRow key={student.id}>
                               <TableCell>{student.student_id}</TableCell>
-                              <TableCell>{student.profile?.first_name || 'N/A'} {student.profile?.last_name || ''}</TableCell>
+                              <TableCell>
+                                {student.user?.first_name || student.profile?.first_name || 'N/A'} {student.user?.last_name || student.profile?.last_name || ''}
+                              </TableCell>
+                              <TableCell>
+                                {student.phone_number || student.user?.phone_number || student.profile?.phone_number || 'N/A'}
+                              </TableCell>
                               <TableCell>{student.program}</TableCell>
                               <TableCell>{student.year_of_study}</TableCell>
-                              <TableCell>{getCompanyName(attachmentsByStudent[student.id]?.company)}</TableCell>
-                              <TableCell>{getCompanyLocation(attachmentsByStudent[student.id]?.company)}</TableCell>
                               <TableCell>
-                                <Button 
-                                  variant="outline" 
-                                  size="sm"
-                                  onClick={() => {
-                                    if (selectedStudent && selectedStudent.id === student.id) {
-                                      setSelectedStudent(null);
-                                      setStudentLogs([]);
-                                      setLogsOpen(false);
-                                    } else {
-                                      setSelectedStudent(student);
-                                      setLogsOpen(false);
-                                      setStudentLogs([]);
-                                    }
-                                  }}
-                                >
-                                  View Details
-                                </Button>
+                                {supervisorEvaluations[student.id] ? (
+                                  <Badge variant="outline">
+                                    {((supervisorEvaluations[student.id].total / 110) * 50).toFixed(1)}/50
+                                    <span className="text-xs ml-1">(50%)</span>
+                                  </Badge>
+                                ) : (
+                                  <span className="text-muted-foreground">Not evaluated</span>
+                                )}
+                              </TableCell>
+                              <TableCell>{getCompanyName(attachmentsByStudent[student.id])}</TableCell>
+                              <TableCell>{getCompanyLocation(attachmentsByStudent[student.id])}</TableCell>
+                              <TableCell>
+                                {/* First check for actual attachment dates, then fallback to planned period */}
+                                {attachmentsByStudent[student.id]?.start_date && attachmentsByStudent[student.id]?.end_date ? (
+                                  `${new Date(attachmentsByStudent[student.id].start_date).toLocaleDateString()} - ${new Date(attachmentsByStudent[student.id].end_date).toLocaleDateString()}`
+                                ) : student.attachment_period ? (
+                                  `${student.attachment_period} (Planned)`
+                                ) : (
+                                  'Not set'
+                                )}
                               </TableCell>
                               <TableCell>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => {
-                                    setEvalStudentId(student.id);
-                                    setShowEvalModal(true);
-                                    supabase
-                                      .from("weekly_logs")
-                                      .select("*")
-                                      .eq("student_id", student.id)
-                                      .order("week_number", { ascending: true })
-                                      .then(({ data }) => setEvalLog(data || []));
-                                  }}
-                                >
-                                  Evaluate
-                                </Button>
-                              </TableCell>
-                              <TableCell>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => { setSelectedStudent(student); setShowMessageModal(true); }}
-                                >
-                                  Message
-                                </Button>
+                                <div className="flex gap-2 items-center">
+                                  <Button 
+                                    variant="outline" 
+                                    size="sm"
+                                    className="flex items-center gap-1"
+                                    onClick={() => {
+                                      if (selectedStudent && selectedStudent.id === student.id) {
+                                        setSelectedStudent(null);
+                                        setStudentLogs([]);
+                                        setLogsOpen(false);
+                                      } else {
+                                        setSelectedStudent(student);
+                                        setLogsOpen(false);
+                                        setStudentLogs([]);
+                                      }
+                                    }}
+                                  >
+                                    <Users className="h-3 w-3" />
+                                    View
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="flex items-center gap-1"
+                                    onClick={async () => {
+                                      setEvalStudentId(student.id);
+                                      setShowEvalModal(true);
+                                      try {
+                                        const response = await fetch(`${API_BASE_URL}/weekly-logs/?student=${student.id}`, {
+                                          headers: {
+                                            'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+                                            'Content-Type': 'application/json',
+                                          },
+                                        });
+                                        if (response.ok) {
+                                          const data = await response.json();
+                                          setEvalLog(data.results || data || []);
+                                        }
+                                      } catch (error) {
+                                        console.error('Error fetching weekly logs:', error);
+                                        setEvalLog([]);
+                                      }
+                                    }}
+                                  >
+                                    <ClipboardList className="h-3 w-3" />
+                                    Evaluate
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="flex items-center gap-1"
+                                    onClick={() => { setSelectedStudent(student); setShowMessageModal(true); }}
+                                  >
+                                    <Bell className="h-3 w-3" />
+                                    Message
+                                  </Button>
+                                </div>
                               </TableCell>
                             </TableRow>
                           ))}
@@ -544,21 +683,13 @@ const SupervisorDashboard = () => {
                           <div>
                             <p className="text-sm font-medium">Company</p>
                             <p className="text-sm text-muted-foreground">
-                              {studentAttachment?.company
-                                ? (Array.isArray(studentAttachment.company)
-                                    ? (studentAttachment.company[0]?.name || 'N/A')
-                                    : (studentAttachment.company.name || 'N/A'))
-                                : 'No company info submitted'}
+                              {getCompanyName(studentAttachment)}
                             </p>
                           </div>
                           <div>
                             <p className="text-sm font-medium">Company Location</p>
                             <p className="text-sm text-muted-foreground">
-                              {studentAttachment?.company
-                                ? (Array.isArray(studentAttachment.company)
-                                    ? (studentAttachment.company[0]?.location || studentAttachment.company[0]?.address || 'N/A')
-                                    : (studentAttachment.company.location || studentAttachment.company.address || 'N/A'))
-                                : 'No company info submitted'}
+                              {getCompanyLocation(studentAttachment)}
                             </p>
                           </div>
                         </div>
@@ -570,12 +701,24 @@ const SupervisorDashboard = () => {
                               size="sm" 
                               onClick={async () => {
                                 if (!logsOpen) {
-                                  const { data } = await supabase
-                                    .from("weekly_logs")
-                                    .select("*")
-                                    .eq("student_id", selectedStudent.id)
-                                    .order("week_number", { ascending: true });
-                                  setStudentLogs(data || []);
+                                  try {
+                                    const response = await fetch(`${API_BASE_URL}/weekly-logs/?student=${selectedStudent.id}`, {
+                                      headers: {
+                                        'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+                                        'Content-Type': 'application/json',
+                                      },
+                                    });
+                                    if (response.ok) {
+                                      const data = await response.json();
+                                      const logsList = data.results || data;
+                                      // Sort by week_number
+                                      logsList.sort((a: any, b: any) => a.week_number - b.week_number);
+                                      setStudentLogs(logsList || []);
+                                    }
+                                  } catch (error) {
+                                    console.error('Error fetching weekly logs:', error);
+                                    setStudentLogs([]);
+                                  }
                                 }
                                 setLogsOpen((prev) => !prev);
                               }}
@@ -672,7 +815,7 @@ const SupervisorDashboard = () => {
                         ) : (
                           evaluations.map(ev => (
                             <TableRow key={ev.id}>
-                              <TableCell>{ev.student?.profile?.first_name || ''} {ev.student?.profile?.last_name || ''}</TableCell>
+                              <TableCell>{ev.student?.user?.first_name || ''} {ev.student?.user?.last_name || ''}</TableCell>
                               <TableCell>{ev.created_at ? format(new Date(ev.created_at), 'yyyy-MM-dd') : '-'}</TableCell>
                               <TableCell>{ev.total || '-'}</TableCell>
                               <TableCell>{ev.overall_assessment || '-'}</TableCell>
@@ -736,7 +879,7 @@ const SupervisorDashboard = () => {
           </DialogHeader>
           {selectedEvaluation && (
             <div className="space-y-2">
-              <div><b>Student:</b> {selectedEvaluation.student?.profile?.first_name || ''} {selectedEvaluation.student?.profile?.last_name || ''}</div>
+              <div><b>Student:</b> {selectedEvaluation.student?.user?.first_name || ''} {selectedEvaluation.student?.user?.last_name || ''}</div>
               <div><b>Date:</b> {selectedEvaluation.created_at ? format(new Date(selectedEvaluation.created_at), 'yyyy-MM-dd') : '-'}</div>
               <div><b>Total:</b> {selectedEvaluation.total || '-'}</div>
               <div><b>Overall Assessment:</b> {selectedEvaluation.overall_assessment || '-'}</div>
@@ -766,15 +909,26 @@ const SupervisorDashboard = () => {
                 if (!messageContent.trim()) return;
                 setMessageSending(true);
                 try {
-                  await supabase.from("messages").insert({
-                    sender_id: currentUser.id,
-                    receiver_id: selectedStudent.profile?.id,
-                    content: messageContent.trim(),
+                  const response = await fetch(`${API_BASE_URL}/messages/`, {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                      receiver_id: selectedStudent.user_id || selectedStudent.profile?.id,
+                      content: messageContent.trim(),
+                    })
                   });
-                  setMessageContent("");
-                  setShowMessageModal(false);
-                  toast({ title: "Message sent!" });
-                } catch (err) {
+                  
+                  if (response.ok) {
+                    setMessageContent("");
+                    setShowMessageModal(false);
+                    toast({ title: "Message sent!" });
+                  } else {
+                    throw new Error('Failed to send message');
+                  }
+                } catch (err: any) {
                   toast({ title: "Error sending message", description: err.message, variant: "destructive" });
                 } finally {
                   setMessageSending(false);

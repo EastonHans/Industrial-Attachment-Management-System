@@ -4,8 +4,8 @@ import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { Button } from "../ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/contexts/AuthContext";
+import { supabase } from "@/services/djangoApi";
+import { useAuth } from "@/contexts/AuthContext_django";
 
 export default function WeeklyLogForm({ onSubmitted }: { onSubmitted?: () => void }) {
   const { toast } = useToast();

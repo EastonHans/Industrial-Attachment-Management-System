@@ -1,13 +1,15 @@
 import { useState, useEffect, useRef } from "react";
+import DocumentVerificationTabs from "@/components/DocumentVerificationTabs";
 import { Button } from "@/components/ui/button";
+import { simpleTokenManager } from "@/utils/simpleTokenManager";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { Upload, Download, FileText, ClipboardList, Bell } from "lucide-react";
-import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
-import { verifyTranscript } from "@/utils/transcriptUtils";
+import { useAuth } from "@/contexts/AuthContext_django";
+import { supabase, API_BASE_URL, tokenManager } from "@/services/djangoApi";
+// import { processTranscriptFile } from "@/utils/enhancedTranscriptProcessor"; // Disabled, handled via backend API in DocumentVerificationTabs
 import { generateIntroductoryLetter, generateInsuranceLetter, downloadLetter } from "@/utils/letterGenerator";
 import { assignSupervisors } from "@/utils/supervisorAssignment";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -22,11 +24,11 @@ import AddressAutocomplete from '@/components/ui/AddressAutocomplete';
 import { ReimbursementService } from "@/services/reimbursementService";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import WeeklyLogForm from "@/components/student/WeeklyLogForm";
-import { NotificationPopover } from "@/components/ui/notification-popover";
+import NavBar from "@/components/layout/NavBar";
 
-// Add these constants at the top of the file
-const DEFAULT_RATE = Number(import.meta.env.VITE_PUBLIC_REIMBURSEMENT_RATE) || 20;
-const DEFAULT_LUNCH = Number(import.meta.env.VITE_PUBLIC_REIMBURSEMENT_LUNCH) || 200;
+// Get dynamic rates from localStorage (set by admin) or fallback to env
+const getGlobalRate = () => Number(localStorage.getItem('globalRate')) || Number(import.meta.env.VITE_PUBLIC_REIMBURSEMENT_RATE) || 20;
+const getGlobalLunch = () => Number(localStorage.getItem('globalLunch')) || Number(import.meta.env.VITE_PUBLIC_REIMBURSEMENT_LUNCH) || 200;
 
 const StudentDashboard = () => {
   const { toast } = useToast();
@@ -77,13 +79,38 @@ const StudentDashboard = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [existingAttachment, setExistingAttachment] = useState<any>(null);
   const [weeklyLogs, setWeeklyLogs] = useState<any[]>([]);
-  const [messages, setMessages] = useState<any[]>([]);
-  const [replyContent, setReplyContent] = useState("");
-  const [replySending, setReplySending] = useState(false);
-  const [showReplyModal, setShowReplyModal] = useState(false);
-  const [replyTo, setReplyTo] = useState<any>(null);
   const replyInputRef = useRef(null);
-  const [unreadCount, setUnreadCount] = useState(0);
+
+  // Function to refresh verification status (used as callback)
+  const refreshVerificationStatus = async () => {
+    if (!currentUser?.id) return;
+
+    try {
+      const API_BASE_URL = import.meta.env.VITE_DJANGO_API_URL || 'http://localhost:8080/api';
+      const token = simpleTokenManager.getAccessToken();
+      const response = await fetch(`${API_BASE_URL}/documents/status/`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        console.error('Error loading verification status:', response.status);
+        return;
+      }
+
+      const result = await response.json();
+      
+      if (result.success && result.verification_status) {
+        const verificationData = result.verification_status;
+        setIsEligible(verificationData.is_verified);
+        setFeeVerified(verificationData.fee_verified ?? null);
+      }
+    } catch (error) {
+      console.error('Error in refreshVerificationStatus:', error);
+    }
+  };
 
   // Load verification status on component mount
   useEffect(() => {
@@ -92,32 +119,44 @@ const StudentDashboard = () => {
       if (!currentUser?.id) return;
 
       try {
-        const { data, error } = await supabase
-          .from('verification_status')
-          .select('*')
-          .eq('student_id', currentUser.id)
-          .single();
+        // Use Django API to get verification status
+        const API_BASE_URL = import.meta.env.VITE_DJANGO_API_URL || '/api';
+        console.log('API_BASE_URL:', API_BASE_URL);
+        const fullUrl = `${API_BASE_URL}/documents/status/`;
+        console.log('Full URL:', fullUrl);
+        const token = simpleTokenManager.getAccessToken();
+        console.log('Token found:', token ? 'YES' : 'NO', token?.substring(0, 10) + '...');
+        console.log('All localStorage keys:', Object.keys(localStorage));
+        const response = await fetch(fullUrl, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        });
 
-        if (error) {
-          console.error('Error loading verification status:', error);
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('Error loading verification status:', response.status, errorText);
           return;
         }
 
-        if (data) {
-          setIsEligible(data.is_verified);
-          setFeeVerified(data.fee_verified ?? null);
+        const result = await response.json();
+        
+        if (result.success && result.verification_status) {
+          const verificationData = result.verification_status;
+          setIsEligible(verificationData.is_verified);
+          setFeeVerified(verificationData.fee_verified ?? null);
           
-          // If student is eligible, try to assign supervisors
-          if (data.is_verified) {
+          // If student is eligible (both transcript and fee verified), try to assign supervisors
+          if (verificationData.is_verified && verificationData.fee_verified) {
             try {
               console.log('Student is already eligible, attempting to assign supervisors');
-              await assignSupervisors(currentUser.id);
-              console.log('Supervisors assigned successfully');
+              const result = await assignSupervisors(studentDetails?.id || currentUser.id);
+              console.log('Supervisor assignment result:', result.message);
             } catch (error: any) {
               console.error("Error assigning supervisors:", error);
-              // Only show error if it's not about existing assignments
-              if (!error.message.includes("Student already has supervisors assigned")) {
-                if (error.message.includes("No active supervisors available")) {
+              // Show appropriate error messages
+              if (error.message.includes("No active supervisors available")) {
                   toast({
                     title: "Supervisor Assignment Pending",
                     description: "You are eligible, but there are no active supervisors available. Please contact the administrator.",
@@ -136,7 +175,6 @@ const StudentDashboard = () => {
                     variant: "destructive",
                   });
                 }
-              }
             }
           }
         }
@@ -154,19 +192,25 @@ const StudentDashboard = () => {
       if (!currentUser?.id) return;
 
       try {
-        const { data, error } = await supabase
-          .from('students')
-          .select('*')
-          .eq('id', currentUser.id)
-          .single();
-
-        if (error) {
-          console.error('Error loading student details:', error);
+        // Use Django API to get student details
+        const response = await fetch(`${API_BASE_URL}/students/`, {
+          headers: {
+            'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+            'Content-Type': 'application/json',
+          },
+        });
+        
+        if (!response.ok) {
+          console.error('Error loading student details:', response.status);
           return;
         }
-
-        if (data) {
-          setStudentDetails(data);
+        
+        const data = await response.json();
+        // Django ViewSet returns an array of results for current user
+        if (data && data.results && Array.isArray(data.results) && data.results.length > 0) {
+          setStudentDetails(data.results[0]);
+        } else if (data && Array.isArray(data) && data.length > 0) {
+          setStudentDetails(data[0]);
         }
       } catch (error) {
         console.error('Error in loadStudentDetails:', error);
@@ -182,33 +226,25 @@ const StudentDashboard = () => {
       if (!currentUser?.id) return;
 
       try {
-        console.log('Loading assigned supervisors for student:', currentUser.id);
-        const { data, error } = await supabase
-          .from('supervisor_assignments')
-          .select(`
-            id,
-            status,
-            supervisor:supervisors (
-              id,
-              department,
-              title,
-              profile:profiles (
-                first_name,
-                last_name,
-                email
-              )
-            )
-          `)
-          .eq('student_id', currentUser.id);
+        console.log('Loading assigned supervisors for student:', studentDetails?.id || currentUser.id);
+        // Use Django API to get supervisor assignments
+        const response = await fetch(`${API_BASE_URL}/supervisor-assignments/?student=${studentDetails?.id || currentUser.id}`, {
+          headers: {
+            'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+            'Content-Type': 'application/json',
+          },
+        });
 
-        if (error) {
-          console.error('Error loading assigned supervisors:', error);
+        if (!response.ok) {
+          console.error('Error loading assigned supervisors:', response.status);
           return;
         }
 
+        const data = await response.json();
+
         console.log('Assigned supervisors data:', data);
         if (data) {
-          setAssignedSupervisors(data);
+          setAssignedSupervisors(data.results || data);
         }
       } catch (error) {
         console.error('Error in loadAssignedSupervisors:', error);
@@ -216,17 +252,16 @@ const StudentDashboard = () => {
     };
 
     loadAssignedSupervisors();
-  }, [currentUser?.id]);
+  }, [currentUser?.id, studentDetails?.id]);
 
   // Fetch attachments and reports for the current student
   useEffect(() => {
     const fetchLogs = async () => {
       if (!currentUser?.id) return;
-      // Fetch attachments
+      // Fetch attachments (Django filters automatically to current user)
       const { data: attachmentsData } = await supabase
         .from("attachments")
         .select("*, company:companies(*)")
-        .eq("student_id", currentUser.id)
         .order("created_at", { ascending: false });
       setAttachments(attachmentsData || []);
     };
@@ -237,11 +272,12 @@ const StudentDashboard = () => {
   useEffect(() => {
     const checkExistingAttachment = async () => {
       if (!currentUser?.id) return;
-      const { data } = await supabase
+      // Get current user's attachment (Django filters automatically)
+      const { data: attachmentData } = await supabase
         .from("attachments")
-        .select("*, company:companies(*)")
-        .eq("student_id", currentUser.id)
-        .single();
+        .select("*, company:companies(*)");
+      
+      const data = Array.isArray(attachmentData) && attachmentData.length > 0 ? attachmentData[0] : null;
       if (data) {
         setExistingAttachment(data);
         setIsEditing(true);
@@ -267,202 +303,25 @@ const StudentDashboard = () => {
   useEffect(() => {
     const fetchWeeklyLogs = async () => {
       if (!currentUser?.id) return;
+      // Get current user's weekly logs (Django filters automatically)
       const { data } = await supabase
         .from("weekly_logs")
         .select("*")
-        .eq("student_id", currentUser.id)
         .order("date", { ascending: false });
       setWeeklyLogs(data || []);
     };
     fetchWeeklyLogs();
   }, [currentUser?.id]);
 
-  // Fetch received messages for student
-  useEffect(() => {
-    if (!currentUser) return;
-    const fetchMessages = async () => {
-      const { data } = await supabase
-        .from("messages")
-        .select("*, sender:profiles(id, first_name, last_name), read")
-        .eq("receiver_id", currentUser.id)
-        .order("created_at", { ascending: false });
-      setMessages(data || []);
-      setUnreadCount((data || []).filter((msg: any) => !msg.read).length);
-    };
-    fetchMessages();
-  }, [currentUser]);
-
-  // Handle file selection
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files && event.target.files[0]) {
-      setSelectedFile(event.target.files[0]);
-      // Automatically start processing when a file is selected
-      handleUploadTranscript(event.target.files[0]);
-    }
-  };
-
-  // Trigger file input click
-  const triggerFileInput = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.click();
-    }
-  };
-
-  // Verify transcript with the actual file
-  const handleUploadTranscript = async (file: File) => {
-    if (!file || !currentUser?.id) return;
-
-    toast({
-      title: "Processing Transcript",
-      description: "Your transcript is being analyzed for eligibility...",
-    });
-    
-    // Show progress indicator
-    let currentProgress = 10;
-    setProgress(currentProgress);
-    
-    const progressInterval = setInterval(() => {
-      if (currentProgress < 90) {
-        currentProgress += 10;
-        setProgress(currentProgress);
-      }
-    }, 500);
-    
-    try {
-      // Verify the transcript with the actual file
-      if (!studentDetails) {
-        clearInterval(progressInterval);
-        toast({
-          title: "Verification Failed",
-          description: "Student details are not available.",
-          variant: "destructive",
-        });
-        return;
-      }
-      
-      const fullName = `${currentUser?.firstName || ''} ${currentUser?.lastName || ''}`;
-      console.log(`Starting transcript verification for student: ${fullName}`);
-      
-      const result = await verifyTranscript(
-        file,
-        fullName.trim(),
-        studentDetails.program,
-        studentDetails.year_of_study
-      );
-      
-      setProgress(100);
-      clearInterval(progressInterval);
-      
-      console.log("Transcript verification result:", result);
-      
-      // Save verification status to Supabase
-      const { error: upsertError } = await supabase
-        .from('verification_status')
-        .upsert({
-          student_id: currentUser.id,
-          is_verified: result.eligible,
-          verification_details: result,
-          verification_date: new Date().toISOString()
-        }, { onConflict: 'student_id' });
-
-      if (upsertError) {
-        console.error('Error saving verification status:', upsertError);
-        toast({
-          title: "Error",
-          description: "Failed to save verification status. Please try again.",
-          variant: "destructive",
-        });
-        return;
-      }
-      
-      setIsEligible(result.eligible);
-      
-      // If student is eligible, automatically assign supervisors
-      if (result.eligible) {
-        try {
-          console.log('Attempting to assign supervisors for eligible student:', currentUser.id);
-          await assignSupervisors(currentUser.id);
-          console.log('Supervisors assigned successfully');
-          toast({
-            title: "Supervisors Assigned",
-            description: "Two supervisors have been automatically assigned to you.",
-          });
-        } catch (error: any) {
-          console.error("Error assigning supervisors:", error);
-          // Show a more informative error message
-          if (error.message.includes("No active supervisors available")) {
-            toast({
-              title: "Supervisor Assignment Pending",
-              description: "You are eligible, but there are no active supervisors available. Please contact the administrator.",
-              variant: "default",
-            });
-          } else if (error.message.includes("Not enough active supervisors")) {
-            toast({
-              title: "Supervisor Assignment Pending",
-              description: "You are eligible, but there are not enough active supervisors. Please contact the administrator.",
-              variant: "default",
-            });
-          } else {
-            toast({
-              title: "Supervisor Assignment Failed",
-              description: "You are eligible, but there was an error assigning supervisors. Please contact support.",
-              variant: "destructive",
-            });
-          }
-        }
-      }
-      
-      // Show detailed verification results
-      if (result.eligible) {
-        toast({
-          title: "Verification Successful",
-          description: "You are eligible for industrial attachment.",
-        });
-      } else {
-        let failureReason = "You do not meet the requirements for industrial attachment.\n";
-        
-        if (!result.nameMatched) {
-          failureReason += "• Name on transcript doesn't match your account.\n";
-        }
-        
-        if (!result.meetsYearRequirement) {
-          failureReason += "• You haven't reached the required year and semester.\n";
-        }
-        
-        if (!result.meetsUnitRequirement) {
-          failureReason += `• You have ${result.completedUnits} units but need ${result.requiredUnits}.\n`;
-        }
-        
-        if (result.hasIncompleteUnits) {
-          failureReason += "• You have incomplete units (marked with I, X, or Z).\n";
-        }
-        
-        toast({
-          title: "Verification Failed",
-          description: failureReason,
-          variant: "destructive",
-        });
-      }
-    } catch (error: any) {
-      clearInterval(progressInterval);
-      setProgress(0);
-      console.error("Error verifying transcript:", error);
-      toast({
-        title: "Verification Error",
-        description: error.message || "Failed to process transcript",
-        variant: "destructive",
-      });
-    }
-  };
 
   // Handle downloading introductory letter
   const handleDownloadIntroductoryLetter = () => {
     if (!currentUser || !studentDetails) return;
     const letter = generateIntroductoryLetter(
-      `${currentUser.firstName} ${currentUser.lastName}`,
-      currentUser.id,
+      `${currentUser.first_name} ${currentUser.last_name}`,
+      studentDetails.student_id, // Use student_id instead of currentUser.id
       studentDetails.program,
-      studentDetails.year_of_study,
+      studentDetails.year_of_study.toString(),
       attachmentForm.attachment_period || "[Period]"
     );
     downloadLetter(letter, 'introductory_letter.pdf');
@@ -476,8 +335,8 @@ const StudentDashboard = () => {
   const handleDownloadInsuranceLetter = () => {
     if (!currentUser || !studentDetails) return;
     const letter = generateInsuranceLetter(
-      `${currentUser.firstName} ${currentUser.lastName}`,
-      currentUser.id,
+      `${currentUser.first_name} ${currentUser.last_name}`,
+      studentDetails.student_id, // Use student_id instead of currentUser.id
       studentDetails.program
     );
     downloadLetter(letter, 'insurance_cover_letter.pdf');
@@ -495,8 +354,35 @@ const StudentDashboard = () => {
     }
   };
 
+  // Load Google Maps API if not already loaded
+  const loadGoogleMapsAPI = (): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      if (window.google && window.google.maps) {
+        resolve();
+        return;
+      }
+
+      const apiKey = import.meta.env.VITE_PUBLIC_GOOGLE_MAPS_API_KEY;
+      if (!apiKey) {
+        reject(new Error("Google Maps API key not configured"));
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`;
+      script.async = true;
+      script.defer = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("Failed to load Google Maps API"));
+      document.head.appendChild(script);
+    });
+  };
+
   // Google Maps JS API helper for driving distance
-  const getDrivingDistance = (origin: string, destination: string): Promise<number> => {
+  const getDrivingDistance = async (origin: string, destination: string): Promise<number> => {
+    // Ensure Google Maps API is loaded
+    await loadGoogleMapsAPI();
+    
     return new Promise((resolve, reject) => {
       if (!window.google || !window.google.maps || !window.google.maps.DirectionsService) {
         reject(new Error("Google Maps DirectionsService not available"));
@@ -524,7 +410,10 @@ const StudentDashboard = () => {
   // Update handleAttachmentSubmit to use new fields and reimbursement logic
   const handleAttachmentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUser?.id) return;
+    if (!currentUser?.id || !studentDetails?.id) {
+      toast({ title: "Error", description: "Student information not loaded. Please refresh the page.", variant: "destructive" });
+      return;
+    }
     const details = {
       company_name: attachmentForm.company_name,
       company_location: attachmentForm.company_location,
@@ -537,57 +426,157 @@ const StudentDashboard = () => {
       end_date: attachmentForm.end_date,
       attachment_period: attachmentForm.attachment_period
     };
-    if (!details.company_location || !details.company_name) {
-      toast({ title: "Required", description: "Please fill all required fields.", variant: "destructive" });
+    if (!details.company_location || !details.company_name || !details.start_date || !details.end_date) {
+      toast({ title: "Required", description: "Please fill all required fields including start and end dates.", variant: "destructive" });
       return;
     }
     try {
-      // 1. Upsert company
-      const { data: company, error: companyError } = await supabase
-        .from("companies")
-        .upsert({
+      // Debug: Check token before making API call
+      const token = tokenManager.getAccessToken();
+      console.log('Token for company creation:', token ? 'Token exists' : 'No token found');
+      
+      // 1. Create or get company using Django API with token refresh handling
+      console.log('Creating company with details:', {
+        name: details.company_name,
+        location: details.company_location,
+        contact_phone: details.company_phone,
+        contact_email: details.company_email,
+      });
+      
+      let companyResponse = await fetch(`${API_BASE_URL}/companies/`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
           name: details.company_name,
           location: details.company_location,
           contact_phone: details.company_phone,
           contact_email: details.company_email,
-        })
-        .select()
-        .single();
-      if (companyError) throw companyError;
-      // 2. Create attachment
-      const { data: attachment, error: attachmentError } = await supabase
-        .from("attachments")
-        .insert({
-          student_id: currentUser.id,
-          company_id: company.id,
-          start_date: details.start_date || null,
-          end_date: details.end_date || null,
-          status: "approved",
-          attachment_period: details.attachment_period
-        })
-        .select()
-        .single();
-      if (attachmentError) throw attachmentError;
+        }),
+      });
+      
+      console.log('Company creation response status:', companyResponse.status);
+      
+      // Handle token refresh if needed
+      if (companyResponse.status === 401) {
+        console.log('Token expired, attempting refresh...');
+        // Try to refresh token using auth context
+        try {
+          // For now, redirect to login if token is invalid
+          // TODO: Implement proper token refresh
+          toast({
+            title: "Session Expired",
+            description: "Please log in again to continue.",
+            variant: "destructive",
+          });
+          window.location.href = '/login';
+          return;
+        } catch (refreshError) {
+          console.error('Token refresh failed:', refreshError);
+          window.location.href = '/login';
+          return;
+        }
+      }
+      
+      let company;
+      if (companyResponse.ok) {
+        company = await companyResponse.json();
+        console.log('Company created successfully:', company);
+      } else if (companyResponse.status === 400) {
+        // Company might already exist, try to find it
+        const errorData = await companyResponse.text();
+        console.log('Company creation failed with 400:', errorData);
+        
+        const searchResponse = await fetch(`${API_BASE_URL}/companies/?name=${encodeURIComponent(details.company_name)}`, {
+          headers: {
+            'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+            'Content-Type': 'application/json',
+          },
+        });
+        if (searchResponse.ok) {
+          const companies = await searchResponse.json();
+          company = companies.results?.[0] || companies[0];
+          console.log('Found existing company:', company);
+        } else {
+          const searchError = await searchResponse.text();
+          console.log('Company search failed:', searchError);
+        }
+      } else {
+        const errorData = await companyResponse.text();
+        console.log('Company creation failed:', companyResponse.status, errorData);
+      }
+      
+      if (!company) {
+        console.log('No company object available for attachment creation');
+        throw new Error('Failed to create or find company');
+      }
+      
+      console.log('Using company for attachment:', company);
+      
+      // 2. Create attachment using Django API
+      const attachmentData = {
+        student_id: studentDetails.id,
+        company_id: company.id,
+        start_date: details.start_date,
+        end_date: details.end_date,
+      };
+      console.log('Creating attachment with data:', attachmentData);
+      const attachmentResponse = await fetch(`${API_BASE_URL}/attachments/`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(attachmentData),
+      });
+      
+      if (!attachmentResponse.ok) {
+        const errorData = await attachmentResponse.text();
+        throw new Error(`Failed to create attachment: ${errorData}`);
+      }
+      
+      const attachment = await attachmentResponse.json();
       // 3. Ensure supervisors are assigned
-      let { data: supervisorAssignments, error: supervisorError } = await supabase
-        .from("supervisor_assignments")
-        .select("supervisor_id")
-        .eq("student_id", currentUser.id);
-      let supervisorIds = (supervisorAssignments || []).map((a: any) => a.supervisor_id);
+      const supervisorResponse = await fetch(`${API_BASE_URL}/supervisor-assignments/?student=${studentDetails?.id || currentUser.id}`, {
+        headers: {
+          'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      let supervisorIds = [];
+      if (supervisorResponse.ok) {
+        const supervisorAssignments = await supervisorResponse.json();
+        const assignments = supervisorAssignments.results || supervisorAssignments;
+        supervisorIds = assignments.map((a: any) => a.supervisor);
+      }
       if (!supervisorIds.length) {
         // Try to assign supervisors if none are assigned
         try {
-          await assignSupervisors(currentUser.id);
+          const result = await assignSupervisors(studentDetails?.id || currentUser.id);
           // Fetch again
-          const { data: newAssignments } = await supabase
-            .from("supervisor_assignments")
-            .select("supervisor_id")
-            .eq("student_id", currentUser.id);
-          supervisorIds = (newAssignments || []).map((a: any) => a.supervisor_id);
-        } catch (err) {
-          toast({ title: "Supervisor Assignment Failed", description: "Could not assign supervisors. Please contact admin.", variant: "destructive" });
-          console.error("Supervisor assignment error:", err);
-          return;
+          const newSupervisorResponse = await fetch(`${API_BASE_URL}/supervisor-assignments/?student=${studentDetails?.id || currentUser.id}`, {
+            headers: {
+              'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+              'Content-Type': 'application/json',
+            },
+          });
+          if (newSupervisorResponse.ok) {
+            const newAssignments = await newSupervisorResponse.json();
+            const assignments = newAssignments.results || newAssignments;
+            supervisorIds = assignments.map((a: any) => a.supervisor);
+          }
+        } catch (err: any) {
+          // If supervisors are already assigned, that's actually fine
+          if (err.message && err.message.includes("already has supervisors assigned")) {
+            console.log("Supervisors already assigned, continuing...");
+          } else {
+            toast({ title: "Supervisor Assignment Failed", description: "Could not assign supervisors. Please contact admin.", variant: "destructive" });
+            console.error("Supervisor assignment error:", err);
+            return;
+          }
         }
       }
       if (!supervisorIds.length) {
@@ -597,39 +586,49 @@ const StudentDashboard = () => {
       }
       // 4. Calculate distance and create reimbursement for supervisors
       const cueaAddress = "Catholic University of Eastern Africa, Bogani East Road, Nairobi, Kenya";
-      let distance = await getDrivingDistance(cueaAddress, details.company_location);
-      if (!distance) {
-        // fallback to Haversine if Directions API fails
-        const cueaCoords = { lat: -1.2921, lng: 36.8219 };
-        const companyCoords = await getCoordinates(details.company_location);
-        if (!companyCoords) throw new Error("Could not get company coordinates");
-        distance = calculateDistance(
-          cueaCoords.lat,
-          cueaCoords.lng,
-          companyCoords.lat,
-          companyCoords.lng
-        ) * 2;
-      }
-      const amount = (DEFAULT_RATE * (distance * 2)) + DEFAULT_LUNCH;
-      const reimbursements = supervisorIds.map((supervisorId: string) => ({
-        supervisor_id: supervisorId,
-        student_id: currentUser.id,
-        company_id: company.id,
-        amount,
-        rate: DEFAULT_RATE,
-        lunch: DEFAULT_LUNCH,
-        distance,
-        status: "approved",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      }));
-      const { error: reimbursementError } = await supabase
-        .from("reimbursements")
-        .insert(reimbursements);
-      if (reimbursementError) {
-        toast({ title: "Reimbursement Error", description: reimbursementError.message, variant: "destructive" });
-        console.error("Reimbursement creation error:", reimbursementError);
-        return;
+      console.log("Calculating driving distance using Google Maps API...");
+      const rawDistance = await getDrivingDistance(cueaAddress, details.company_location);
+      console.log(`Raw driving distance calculated: ${rawDistance} km`);
+      
+      // Round distance to 2 decimal places for Django model validation
+      const distance = Math.round(rawDistance * 100) / 100;
+      console.log(`Rounded distance for database: ${distance} km`);
+      
+      // Get the latest admin-set rates from localStorage
+      const currentRate = getGlobalRate();
+      const currentLunch = getGlobalLunch();
+      const studentFee = 1000; // KSH 1000 per student for supervisors
+      console.log(`Using rates: ${currentRate} KSH/km, ${currentLunch} KSH lunch, ${studentFee} KSH student fee`);
+      const amount = (currentRate * distance) + currentLunch + studentFee;
+      console.log(`Calculated amount: (${currentRate} × ${distance}) + ${currentLunch} + ${studentFee} = ${amount} KSH`);
+      // 4. Create reimbursements using Django API
+      for (const supervisorId of supervisorIds) {
+        const reimbursementData = {
+          supervisor_id: supervisorId,
+          student_id: studentDetails?.id || currentUser.id,
+          company_id: company.id,
+          amount,
+          rate: currentRate,
+          lunch: currentLunch,
+          distance,
+          status: "approved"
+        };
+        
+        const reimbursementResponse = await fetch(`${API_BASE_URL}/reimbursements/`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(reimbursementData),
+        });
+        
+        if (!reimbursementResponse.ok) {
+          const errorText = await reimbursementResponse.text();
+          toast({ title: "Reimbursement Error", description: `Failed to create reimbursement: ${errorText}`, variant: "destructive" });
+          console.error("Reimbursement creation error:", errorText);
+          return;
+        }
       }
       toast({ title: "Success", description: "Attachment details submitted and reimbursements created." });
       setIsAttachmentDialogOpen(false);
@@ -643,36 +642,66 @@ const StudentDashboard = () => {
   const handleEditAttachment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser?.id || !existingAttachment) return;
+    
+    // Get company ID from the nested structure
+    const companyId = existingAttachment.company?.id || existingAttachment.company_id;
+    if (!companyId) {
+      toast({ title: "Error", description: "Company ID not found for update.", variant: "destructive" });
+      return;
+    }
+    
     try {
-      // Update company details
-      const { error: companyError } = await supabase
-        .from("companies")
-        .update({
+      // Update company details using Django API
+      const companyResponse = await fetch(`${API_BASE_URL}/companies/${companyId}/`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
           name: attachmentForm.company_name,
           location: attachmentForm.company_location,
           contact_phone: attachmentForm.company_phone,
           contact_email: attachmentForm.company_email,
-        })
-        .eq("id", existingAttachment.company_id);
-      if (companyError) throw companyError;
-      // Update attachment details
-      const { error: attachmentError } = await supabase
-        .from("attachments")
-        .update({
-          start_date: attachmentForm.start_date || null,
-          end_date: attachmentForm.end_date || null,
+        }),
+      });
+      
+      if (!companyResponse.ok) {
+        const errorData = await companyResponse.text();
+        throw new Error(`Failed to update company: ${errorData}`);
+      }
+      
+      // Update attachment details using Django API
+      const attachmentResponse = await fetch(`${API_BASE_URL}/attachments/${existingAttachment.id}/`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          start_date: attachmentForm.start_date,
+          end_date: attachmentForm.end_date,
           attachment_period: attachmentForm.attachment_period
-        })
-        .eq("id", existingAttachment.id);
-      if (attachmentError) throw attachmentError;
+        }),
+      });
+      
+      if (!attachmentResponse.ok) {
+        const errorData = await attachmentResponse.text();
+        throw new Error(`Failed to update attachment: ${errorData}`);
+      }
       toast({ title: "Success", description: "Attachment details updated successfully." });
-      // Refresh the attachments list
-      const { data: attachmentsData } = await supabase
-        .from("attachments")
-        .select("*, company:companies(*)")
-        .eq("student_id", currentUser.id)
-        .order("created_at", { ascending: false });
-      setAttachments(attachmentsData || []);
+      // Refresh the attachments list using Django API
+      const attachmentsListResponse = await fetch(`${API_BASE_URL}/attachments/`, {
+        headers: {
+          'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      if (attachmentsListResponse.ok) {
+        const attachmentsData = await attachmentsListResponse.json();
+        setAttachments(attachmentsData.results || attachmentsData || []);
+      }
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     }
@@ -686,15 +715,20 @@ const StudentDashboard = () => {
     setFeeCheckInProgress(true);
     setFeeError(null);
     try {
-      // Fetch current verification status for this student
-      const { data: currentStatus, error: statusError } = await supabase
-        .from('verification_status')
-        .select('fee_verified, is_verified')
-        .eq('student_id', currentUser.id)
-        .maybeSingle();
-
-      if (statusError) {
-        console.error('Error fetching verification status:', statusError);
+      // Fetch current verification status from Django API
+      const response = await fetch(`${API_BASE_URL}/documents/status/`, {
+        headers: {
+          'Authorization': `Bearer ${simpleTokenManager.getAccessToken()}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      let currentStatus = null;
+      if (response.ok) {
+        const result = await response.json();
+        if (result.success && result.verification_status) {
+          currentStatus = result.verification_status;
+        }
       }
 
       const text = await extractTextFromFile(file);
@@ -706,43 +740,58 @@ const StudentDashboard = () => {
       if (balance !== null && balance === 0) {
         setFeeVerified(true);
         setFeeError(null);
-        // Persist fee verification status to Supabase
-        await supabase
-          .from('verification_status')
-          .upsert({
-            student_id: currentUser.id,
+        // Update fee verification status via Django API
+        await fetch(`${API_BASE_URL}/verification-status/`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${simpleTokenManager.getAccessToken()}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            student: currentUser.id,
             fee_verified: true,
-            is_verified, // always include!
+            is_verified: is_verified, // preserve transcript verification
             fee_verification_date: new Date().toISOString(),
-          }, { onConflict: 'student_id' });
+          }),
+        });
         toast({ title: "Fee Statement Verified", description: "Your fee balance is zero. You may proceed." });
       } else if (balance !== null) {
         setFeeVerified(false);
         setFeeError(`Your fee balance is not zero (Balance: ${balance}). Please clear your balance before proceeding.`);
         // Only update to false if not previously verified
         if (!currentStatus?.fee_verified) {
-          await supabase
-            .from('verification_status')
-            .upsert({
-              student_id: currentUser.id,
+          await fetch(`${API_BASE_URL}/verification-status/`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${simpleTokenManager.getAccessToken()}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              student: currentUser.id,
               fee_verified: false,
-              is_verified, // always include!
+              is_verified: is_verified,
               fee_verification_date: new Date().toISOString(),
-            }, { onConflict: 'student_id' });
+            }),
+          });
         }
         toast({ title: "Fee Statement Not Verified", description: `Your fee balance is not zero (Balance: ${balance}).`, variant: "destructive" });
       } else {
         setFeeVerified(false);
         setFeeError("Could not find a balance in your fee statement. Please upload a valid statement.");
         if (!currentStatus?.fee_verified) {
-          await supabase
-            .from('verification_status')
-            .upsert({
-              student_id: currentUser.id,
+          await fetch(`${API_BASE_URL}/verification-status/`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${simpleTokenManager.getAccessToken()}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              student: currentUser.id,
               fee_verified: false,
-              is_verified, // always include!
+              is_verified: is_verified,
               fee_verification_date: new Date().toISOString(),
-            }, { onConflict: 'student_id' });
+            }),
+          });
         }
         toast({ title: "Fee Statement Not Verified", description: "Could not find a balance in your fee statement.", variant: "destructive" });
       }
@@ -764,40 +813,17 @@ const StudentDashboard = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
-          <h1 className="text-xl font-semibold text-gray-900">Student Dashboard</h1>
-          <div className="flex items-center gap-4">
-            <NotificationPopover
-              messages={messages}
-              unreadCount={unreadCount}
-              onReply={async (msg, reply) => {
-                await supabase.from("messages").insert({ sender_id: currentUser.id, receiver_id: msg.sender.id, content: reply });
-                setUnreadCount(c => c + 1);
-              }}
-              onViewAll={() => {
-                // Optionally navigate to settings/messages tab
-                document.querySelector('button[value="settings"]')?.click();
-              }}
-            />
-            <Button 
-              variant="outline" 
-              onClick={() => logout()}
-            >
-              Sign Out
-            </Button>
-          </div>
-        </div>
-      </header>
+    <>
+      <main className="min-h-screen bg-gray-50">
+        <NavBar title="Student Dashboard" />
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="flex flex-col md:flex-row gap-6">
           {/* Sidebar */}
           <div className="w-full md:w-1/4">
             <Card>
               <CardHeader>
-                <CardTitle>{currentUser ? `${currentUser.firstName} ${currentUser.lastName}` : "Loading..."}</CardTitle>
+                <CardTitle>{currentUser ? `${currentUser.first_name} ${currentUser.last_name}` : "Loading..."}</CardTitle>
                 <CardDescription>
                   Student ID: {studentDetails?.student_id || "Loading..."}
                 </CardDescription>
@@ -836,14 +862,11 @@ const StudentDashboard = () => {
                       <div className="mt-2 space-y-2">
                         {assignedSupervisors.map((assignment) => (
                           <div key={assignment.id} className="text-sm text-muted-foreground">
-                            <p>{assignment.supervisor.profile.first_name} {assignment.supervisor.profile.last_name} - {assignment.supervisor.title} ({assignment.supervisor.department})</p>
+                            <p>{assignment.supervisor_detail?.user?.first_name || 'Unknown'} {assignment.supervisor_detail?.user?.last_name || 'Supervisor'}</p>
                           </div>
                         ))}
                       </div>
                     </div>
-                  )}
-                  {studentDetails?.phone_number && (
-                    <div>Phone Number: {studentDetails.phone_number}</div>
                   )}
                 </div>
               </CardContent>
@@ -873,82 +896,24 @@ const StudentDashboard = () => {
                       <Button onClick={handleDownloadIntroductoryLetter}>
                         <Download className="mr-2 h-4 w-4" /> Download Introductory Letter
                       </Button>
-                      <Button onClick={handleDownloadInsuranceLetter} variant="outline">
-                        <Download className="mr-2 h-4 w-4" /> Download Insurance Letter
-                      </Button>
                     </div>
                     <p className="text-muted-foreground text-center max-w-xl">
-                      Please download and print your letters. Submit them to your attachment institution as required.
+                      Please download and print your letter. Submit it to your attachment institution as required.
                     </p>
                   </div>
                 ) : (
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Eligibility Verification</CardTitle>
-                      <CardDescription>
-                        Upload your transcript and fee statement to verify your eligibility for industrial attachment
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-6">
-                        <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
-                          <Upload className="mx-auto h-12 w-12 text-gray-400" />
-                          <div className="mt-4">
-                            <p className="text-sm text-gray-500">
-                              {selectedFile 
-                                ? `Selected: ${selectedFile.name}` 
-                                : "Drag and drop your transcript file, or"}
-                            </p>
-                            <input
-                              ref={fileInputRef}
-                              type="file"
-                              accept=".pdf,.jpg,.jpeg,.png"
-                              className="hidden"
-                              onChange={handleFileChange}
-                            />
-                            <Button 
-                              variant="outline" 
-                              className="mt-2"
-                              onClick={triggerFileInput}
-                            >
-                              Browse Files
-                            </Button>
-                          </div>
-                          <p className="mt-2 text-xs text-gray-500">
-                            PDF, JPEG or PNG up to 10MB
-                          </p>
-                        </div>
-                        
-                        <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
-                          <Upload className="mx-auto h-12 w-12 text-gray-400" />
-                          <div className="mt-4">
-                            <p className="text-sm text-gray-500">
-                              {feeStatementFile 
-                                ? `Selected: ${feeStatementFile.name}` 
-                                : "Drag and drop your fee statement, or"}
-                            </p>
-                            <input
-                              type="file"
-                              accept=".pdf,.jpg,.jpeg,.png"
-                              className="hidden"
-                              id="fee-statement-upload"
-                              onChange={handleFeeStatementUpload}
-                            />
-                            <Button 
-                              variant="outline" 
-                              className="mt-2"
-                              onClick={() => document.getElementById('fee-statement-upload')?.click()}
-                            >
-                              Browse Files
-                            </Button>
-                          </div>
-                          <p className="mt-2 text-xs text-gray-500">
-                            PDF, JPEG or PNG up to 10MB
-                          </p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
+                  <div className="space-y-6">
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Document Verification</CardTitle>
+                        <CardDescription>Upload your transcript and fee statement for eligibility verification.</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <DocumentVerificationTabs onVerificationUpdate={refreshVerificationStatus} />
+                      </CardContent>
+                    </Card>
+                    
+                  </div>
                 )}
               </TabsContent>
 
@@ -1155,78 +1120,15 @@ const StudentDashboard = () => {
               {/* Settings Tab */}
               <TabsContent value="settings">
                 <ProfileSettings role="student" />
-                <Card className="mt-6">
-                  <CardHeader>
-                    <CardTitle>Inbox</CardTitle>
-                    <CardDescription>Messages sent to you</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    {messages.length === 0 ? (
-                      <p className="text-muted-foreground">No messages received.</p>
-                    ) : (
-                      <ul className="space-y-2">
-                        {messages.map(msg => (
-                          <li key={msg.id} className="border rounded p-2">
-                            <div className="font-semibold">From: {msg.sender?.first_name} {msg.sender?.last_name}</div>
-                            <div className="text-sm text-muted-foreground">{msg.content}</div>
-                            <div className="text-xs text-gray-400">{msg.created_at ? new Date(msg.created_at).toLocaleString() : ""}</div>
-                            <Button size="sm" variant="outline" className="mt-2" onClick={() => { setReplyTo(msg); setShowReplyModal(true); }}>Reply</Button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </CardContent>
-                </Card>
+
               </TabsContent>
             </Tabs>
-          </div>
-        </div>
+          </div> {/* close main content */}
+        </div>   {/* close flex row */}
+        </div>   {/* close max-w-7xl container */}
       </main>
 
-      {/* Reply Modal */}
-      <Dialog open={showReplyModal} onOpenChange={setShowReplyModal}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Reply to {replyTo?.sender?.first_name} {replyTo?.sender?.last_name}</DialogTitle>
-          </DialogHeader>
-          <form
-            onSubmit={async (e) => {
-              e.preventDefault();
-              if (!replyContent.trim() || !replyTo?.sender?.id) return;
-              setReplySending(true);
-              try {
-                await supabase.from("messages").insert({
-                  sender_id: currentUser.id,
-                  receiver_id: replyTo.sender.id,
-                  content: replyContent.trim(),
-                });
-                setReplyContent("");
-                setShowReplyModal(false);
-                setReplyTo(null);
-                toast({ title: "Reply sent!" });
-              } catch (err) {
-                toast({ title: "Error sending reply", description: err.message, variant: "destructive" });
-              } finally {
-                setReplySending(false);
-              }
-            }}
-            className="space-y-4"
-          >
-            <Label>To: {replyTo?.sender?.first_name} {replyTo?.sender?.last_name}</Label>
-            <textarea
-              ref={replyInputRef}
-              className="w-full border rounded p-2"
-              rows={5}
-              placeholder="Type your reply..."
-              value={replyContent}
-              onChange={e => setReplyContent(e.target.value)}
-              required
-            />
-            <Button type="submit" disabled={replySending}>{replySending ? "Sending..." : "Send Reply"}</Button>
-          </form>
-        </DialogContent>
-      </Dialog>
-    </div>
+    </>
   );
 };
 

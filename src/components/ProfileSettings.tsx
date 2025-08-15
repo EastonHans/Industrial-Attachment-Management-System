@@ -4,8 +4,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/contexts/AuthContext";
+import { supabase } from "@/services/djangoApi";
+import { useAuth } from "@/contexts/AuthContext_django";
 
 interface ProfileSettingsProps {
   role: "student" | "supervisor" | "admin";
@@ -16,8 +16,8 @@ export const ProfileSettings = ({ role }: ProfileSettingsProps) => {
   const { currentUser } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [profile, setProfile] = useState({
-    first_name: currentUser?.firstName || "",
-    last_name: currentUser?.lastName || "",
+    first_name: currentUser?.first_name || "",
+    last_name: currentUser?.last_name || "",
     email: currentUser?.email || "",
     phone_number: (currentUser as any)?.phone_number || "",
     department: "",

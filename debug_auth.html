@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Debug Auth</title>
+</head>
+<body>
+    <h1>Debug Authentication</h1>
+    <button onclick="checkLocalStorage()">Check LocalStorage</button>
+    <button onclick="testAPI()">Test API</button>
+    <div id="output"></div>
+
+    <script>
+        function checkLocalStorage() {
+            const output = document.getElementById('output');
+            const token = localStorage.getItem('django_token');
+            const user = localStorage.getItem('auth_user');
+            const refresh = localStorage.getItem('refresh_token');
+            
+            output.innerHTML = `
+                <h3>LocalStorage Contents:</h3>
+                <p><strong>django_token:</strong> ${token ? token.substring(0, 50) + '...' : 'Not found'}</p>
+                <p><strong>refresh_token:</strong> ${refresh ? refresh.substring(0, 50) + '...' : 'Not found'}</p>
+                <p><strong>auth_user:</strong> ${user || 'Not found'}</p>
+            `;
+        }
+
+        async function testAPI() {
+            const output = document.getElementById('output');
+            const token = localStorage.getItem('django_token');
+            
+            if (!token) {
+                output.innerHTML = '<p style="color: red;">No token found in localStorage</p>';
+                return;
+            }
+            
+            try {
+                const response = await fetch('http://localhost:8080/api/auth/user/', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json',
+                    },
+                });
+                
+                const data = await response.json();
+                output.innerHTML = `
+                    <h3>API Test Results:</h3>
+                    <p><strong>Status:</strong> ${response.status}</p>
+                    <p><strong>Response:</strong> ${JSON.stringify(data, null, 2)}</p>
+                `;
+            } catch (error) {
+                output.innerHTML = `<p style="color: red;">Error: ${error.message}</p>`;
+            }
+        }
+    </script>
+</body>
+</html>

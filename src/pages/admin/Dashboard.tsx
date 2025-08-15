@@ -8,43 +8,116 @@ import { useToast } from "@/hooks/use-toast";
 import { Users, ClipboardCheck, BarChart, DollarSign, Bell, Building, UserCheck, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
-import { Database } from "@/integrations/supabase/types";
+import { useAuth } from "@/contexts/AuthContext_django";
+import { supabase, API_BASE_URL, tokenManager } from "@/services/djangoApi";
 import { ProfileSettings } from "@/components/ProfileSettings";
 import { Label } from "@/components/ui/label";
 import { generateIntroductoryLetter, downloadLetter } from "@/utils/letterGenerator";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from "@/components/ui/dialog";
+import { DeleteConfirmationModal } from "@/components/ui/delete-confirmation-modal";
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 import { ChartContainer } from "@/components/ui/chart";
 import { BarChart as ReBarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { BarChart as LucideBarChart } from "lucide-react";
 import { PieChart, Pie, Cell, Legend } from "recharts";
-import { NotificationPopover } from "@/components/ui/notification-popover";
+import NavBar from "@/components/layout/NavBar";
+import { automaticDataIntegrityChecker } from "@/utils/automaticDataIntegrity";
+import { processTemplateFile, replacePlaceholders } from "@/utils/templateProcessor";
 
-type Student = Database["public"]["Tables"]["students"]["Row"] & {
-  profile?: Array<Database["public"]["Tables"]["profiles"]["Row"]>;
-  verification_status?: Database["public"]["Tables"]["verification_status"]["Row"];
-  attachment?: (Database["public"]["Tables"]["attachments"]["Row"] & {
-    company?: Array<Database["public"]["Tables"]["companies"]["Row"]>;
-  });
+// Helper functions for company data access
+function getCompanyName(student: any): string {
+  if (!student) return '-';
+  // Try attachments first
+  if (student.attachments?.[0]?.company?.name) return student.attachments[0].company.name;
+  // Fallback to direct company property
+  if (student.company?.name) return student.company.name;
+  return '-';
+}
+
+function getCompanyLocation(student: any): string {
+  if (!student) return '-';
+  // Try attachments first
+  if (student.attachments?.[0]?.company?.location) return student.attachments[0].company.location;
+  if (student.attachments?.[0]?.company?.address) return student.attachments[0].company.address;
+  // Fallback to direct company property
+  if (student.company?.location) return student.company.location;
+  if (student.company?.address) return student.company.address;
+  return '-';
+}
+
+type Student = {
+  id: string;
+  user: {
+    id: string;
+    email: string;
+    first_name: string;
+    last_name: string;
+    role: string;
+    is_active: boolean;
+  };
+  student_id: string;
+  program: string;
+  program_type: string;
+  faculty: string;
+  department: string;
+  year_of_study: number;
+  semester: number;
+  attachment_period: string;
+  phone_number: string;
+  final_grade?: number;
+  grade_calculation_details?: any;
+  verification_status?: {
+    id: string;
+    is_verified: boolean;
+    verification_date: string;
+    fee_verified: boolean;
+  };
+  attachments: Array<{
+    id: string;
+    attachment_period: string;
+    company: {
+      id: string;
+      name: string;
+      location: string;
+    };
+  }>;
+  created_at: string;
+  updated_at: string;
 };
 
 type SupervisorWithStudents = {
   id: string;
-  department: string;
+  user: {
+    id: string;
+    email: string;
+    first_name: string;
+    last_name: string;
+    role: string;
+    is_active: boolean;
+  };
+  department?: string;
   title?: string;
   students_count?: number;
-  profile?: Array<{ id: string; first_name: string; last_name: string; email: string; phone_number?: string }>;
   assigned_students?: Array<{
     id: string;
     student_id: string;
     program: string;
-    year_of_study: string;
-    profile?: Array<{ first_name: string; last_name: string; email: string; phone_number?: string }>;
-    company?: Array<{ name: string; location: string }>;
+    year_of_study: number;
+    user: {
+      first_name: string;
+      last_name: string;
+      email: string;
+    };
+    phone_number?: string;
+    company?: {
+      name: string;
+      location: string;
+    };
+    attachment_period?: string;
   }>;
+  created_at: string;
+  updated_at: string;
 };
 
 type Reimbursement = {
@@ -59,15 +132,23 @@ type Reimbursement = {
   status: string;
   created_at: string;
   updated_at: string;
-  student?: Student;
-  company?: Array<Database["public"]["Tables"]["companies"]["Row"]>;
-  supervisor?: {
-    id: string;
-    profile?: Array<{
+  student?: {
+    user: {
       first_name: string;
       last_name: string;
       email: string;
-    }>;
+    };
+  };
+  company?: {
+    name: string;
+    location: string;
+  };
+  supervisor?: {
+    user: {
+      first_name: string;
+      last_name: string;
+      email: string;
+    };
   };
 };
 
@@ -83,11 +164,19 @@ const AdminDashboard = () => {
   const [reimbursements, setReimbursements] = useState<Reimbursement[]>([]);
   const [globalRate, setGlobalRate] = useState(() => {
     const stored = localStorage.getItem('globalRate');
-    return stored ? Number(stored) : 20;
+    const defaultRate = 20;
+    if (!stored) {
+      localStorage.setItem('globalRate', defaultRate.toString());
+    }
+    return stored ? Number(stored) : defaultRate;
   });
   const [globalLunch, setGlobalLunch] = useState(() => {
     const stored = localStorage.getItem('globalLunch');
-    return stored ? Number(stored) : 200;
+    const defaultLunch = 200;
+    if (!stored) {
+      localStorage.setItem('globalLunch', defaultLunch.toString());
+    }
+    return stored ? Number(stored) : defaultLunch;
   });
   const [supervisorForm, setSupervisorForm] = useState({
     firstName: "",
@@ -97,7 +186,48 @@ const AdminDashboard = () => {
     title: "",
   });
   const [supervisorPassword, setSupervisorPassword] = useState("");
-  const [letterTemplate, setLetterTemplate] = useState<string>("");
+  const [letterTemplate, setLetterTemplate] = useState<string>(`<div style="font-family: Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto;">
+    <div style="text-align: center; margin-bottom: 30px;">
+      <h2 style="margin: 0; color: #003366;">THE CATHOLIC UNIVERSITY OF EASTERN AFRICA</h2>
+      <h3 style="margin: 5px 0; color: #003366;">{{faculty}}</h3>
+      <h4 style="margin: 5px 0; color: #666;">{{department}}</h4>
+    </div>
+    
+    <div style="margin-bottom: 20px;">
+      <p style="margin: 0;"><strong>Date:</strong> {{date}}</p>
+    </div>
+    
+    <div style="margin-bottom: 20px;">
+      <p style="margin: 0;"><strong>To Whom It May Concern,</strong></p>
+    </div>
+    
+    <div style="margin-bottom: 20px;">
+      <p style="margin: 0;">Dear Sir/Madam,</p>
+    </div>
+    
+    <div style="margin-bottom: 20px;">
+      <p style="margin: 0;"><strong>Re: Attachment/Internship for: {{name}}</strong></p>
+      <p style="margin: 0;"><strong>Registration No.: {{admno}}</strong></p>
+    </div>
+    
+    <div style="margin-bottom: 20px;">
+      <p>The above named is a {{current_year}} year student taking a {{total_years}} {{degree_type}} programme at The Catholic University of Eastern Africa in the {{faculty}}, {{department}}. The student is taking a Bachelor of Science in {{program}}.</p>
+      
+      <p>The Faculty believes that through Industrial attachments/internships the students will be able to tap a wide range of experience, skills and knowledge that would be difficult to replicate in a classroom setting or through written material alone.</p>
+      
+      <p>To expedite the process, we are therefore, requesting you to consider our student for attachment within the months of {{attachment_period}} 2024 when on long vacation and perhaps, let us know how we can proceed to establish the envisaged inter-organization linkage.</p>
+      
+      <p>I highly recommend the student for any attachment that may exist in your esteemed firm.</p>
+    </div>
+    
+    <div style="margin-top: 50px;">
+      <p style="margin: 0;">______________________________</p>
+      <p style="margin: 5px 0;"><strong>Dr. Elicah Wabululu</strong></p>
+      <p style="margin: 0;">Industrial Attachment Coordinator</p>
+    </div>
+  </div>`);
+  const [uploadedLetterFile, setUploadedLetterFile] = useState<File | null>(null);
+  const [letterFileContent, setLetterFileContent] = useState<string>("");
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [showMessageModal, setShowMessageModal] = useState(false);
@@ -110,6 +240,7 @@ const AdminDashboard = () => {
   const [showSupervisors, setShowSupervisors] = useState(true);
   const [showAssigned, setShowAssigned] = useState(true);
   const [attachmentPeriodFilter, setAttachmentPeriodFilter] = useState<string>("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
   const [messageContent, setMessageContent] = useState("");
   const [messageSending, setMessageSending] = useState(false);
   const messageInputRef = useRef(null);
@@ -119,8 +250,14 @@ const AdminDashboard = () => {
   const [supervisorFilter, setSupervisorFilter] = useState<string>('all');
   const [periodFilter, setPeriodFilter] = useState<string>('all');
   const [supervisorSearch, setSupervisorSearch] = useState('');
-  const [messages, setMessages] = useState([]);
-  const [unreadCount, setUnreadCount] = useState(0);
+  const [deleteModal, setDeleteModal] = useState<{
+    isOpen: boolean;
+    type: 'student' | 'supervisor' | null;
+    id: string;
+    name: string;
+    isLoading: boolean;
+    assignedStudentsCount?: number;
+  }>({ isOpen: false, type: null, id: '', name: '', isLoading: false, assignedStudentsCount: 0 });
 
   // Persist to localStorage when changed
   useEffect(() => {
@@ -130,12 +267,90 @@ const AdminDashboard = () => {
     localStorage.setItem('globalLunch', String(globalLunch));
   }, [globalLunch]);
 
-  // Add helper function at the top of the component
-  const getProfileName = (profileArr?: Array<{ first_name?: string; last_name?: string }>) => {
-    if (Array.isArray(profileArr) && profileArr[0]) {
-      return `${profileArr[0].first_name || ''} ${profileArr[0].last_name || ''}`.trim() || '-';
+  // Helper function to get user name from Django API structure
+  const getUserName = (user?: { first_name?: string; last_name?: string }) => {
+    if (user) {
+      return `${user.first_name || ''} ${user.last_name || ''}`.trim() || '-';
     }
     return '-';
+  };
+
+  // Legacy helper for backward compatibility
+  const getProfileName = (profileArr?: Array<{ first_name?: string; last_name?: string }>) => {
+    if (Array.isArray(profileArr) && profileArr[0]) {
+      return getUserName(profileArr[0]);
+    }
+    return '-';
+  };
+
+  // Function to export reimbursements to CSV
+  const exportReimbursements = () => {
+    try {
+      // Prepare data for export
+      const exportData = filteredReimbursements.map((r) => {
+        const supervisorProfileArr = r.supervisor?.profile as any[];
+        const supervisorName = Array.isArray(supervisorProfileArr) && supervisorProfileArr.length > 0 && supervisorProfileArr[0] != null
+          ? `${(supervisorProfileArr[0] as any).first_name || ''} ${(supervisorProfileArr[0] as any).last_name || ''}`.trim() || '-'
+          : (r.supervisor?.profile && !Array.isArray(r.supervisor.profile) && typeof r.supervisor.profile === 'object' && 'first_name' in r.supervisor.profile ? `${(r.supervisor.profile as any).first_name} ${(r.supervisor.profile as any).last_name}`.trim() : '-');
+        
+        const studentProfileArr = r.student?.profile as any[];
+        const studentName = Array.isArray(studentProfileArr) && studentProfileArr.length > 0 && studentProfileArr[0] != null
+          ? `${(studentProfileArr[0] as any).first_name || ''} ${(studentProfileArr[0] as any).last_name || ''}`.trim() || '-'
+          : (r.student?.profile && !Array.isArray(r.student.profile) && typeof r.student.profile === 'object' && 'first_name' in r.student.profile ? `${(r.student.profile as any).first_name} ${(r.student.profile as any).last_name}`.trim() : '-');
+        
+        const companyArr = r.company as any[];
+        const companyName = Array.isArray(companyArr) && companyArr.length > 0 && companyArr[0] != null
+          ? (companyArr[0] as any).name || '-' : (r.company && !Array.isArray(r.company) && typeof r.company === 'object' && 'name' in r.company ? (r.company as any).name : '-');
+        
+        const studentFee = 1000;
+        const supervisionVisits = r.supervision_visits || 1;
+        const displayAmount = (globalRate * ((r.distance || 0) * 2)) + studentFee + (globalLunch * supervisionVisits);
+        
+        return {
+          'Supervisor': supervisorName,
+          'Student': studentName,
+          'Company': companyName,
+          'Distance (km)': r.distance || 0,
+          'Travel Rate (KSH/km)': globalRate,
+          'Student Fee (KSH)': studentFee,
+          'Supervision Visits': supervisionVisits,
+          'Lunch per Visit (KSH)': globalLunch,
+          'Total Amount (KSH)': displayAmount,
+          'Status': r.status || 'pending',
+          'Created Date': new Date(r.created_at).toLocaleDateString()
+        };
+      });
+
+      // Convert to CSV
+      if (exportData.length === 0) {
+        toast({ title: "No data to export", variant: "destructive" });
+        return;
+      }
+
+      const headers = Object.keys(exportData[0]);
+      const csvContent = [
+        headers.join(','),
+        ...exportData.map(row => 
+          headers.map(header => `"${row[header as keyof typeof row]}"`).join(',')
+        )
+      ].join('\n');
+
+      // Download CSV
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      link.setAttribute('href', url);
+      link.setAttribute('download', `reimbursements_${new Date().toISOString().split('T')[0]}.csv`);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      toast({ title: "Reimbursements exported successfully!" });
+    } catch (error) {
+      console.error('Export error:', error);
+      toast({ title: "Export failed", description: "Please try again", variant: "destructive" });
+    }
   };
 
   // Function to calculate distance between two points using Haversine formula
@@ -188,7 +403,10 @@ const AdminDashboard = () => {
         companyCoords.lng
       ) * 2;
       // Calculate reimbursement amount
-      const amount = (globalRate * distance) + globalLunch;
+      // Formula: (rate * distance) + 1000 per student + (lunch * actual supervision visits)
+      const studentFee = 1000; // KSH 1000 per student
+      const supervisionVisits = 1; // Default to 1 visit - will be updated based on actual visits
+      const amount = (globalRate * distance) + studentFee + (globalLunch * supervisionVisits);
       // Create reimbursements for each supervisor
       const reimbursements = supervisors.map(supervisorId => ({
         supervisor_id: supervisorId,
@@ -196,6 +414,7 @@ const AdminDashboard = () => {
         amount: amount,
         rate: globalRate,
         lunch: globalLunch,
+        supervision_visits: supervisionVisits,
         status: "pending",
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
@@ -211,151 +430,133 @@ const AdminDashboard = () => {
     }
   };
 
-  useEffect(() => {
-    const fetchDashboardData = async () => {
-      if (!currentUser) {
-        setLoading(false);
-        return;
+  // Extract fetchDashboardData as a separate function for reuse
+  const fetchDashboardData = async () => {
+    if (!currentUser) {
+      setLoading(false);
+      return;
+    }
+
+    try {
+      console.log("Fetching admin dashboard data from Django API");
+
+      // Fetch students
+      const { data: studentsData, error: studentsError } = await supabase
+        .from("students")
+        .select();
+
+      if (studentsError) {
+        console.error("Error fetching students:", studentsError);
+        throw studentsError;
       }
 
-      try {
-        console.log("Fetching admin dashboard data");
+      if (studentsData) {
+        console.log("Students data:", studentsData);
+        setStudents(studentsData.results || studentsData);
+      }
 
-        // Fetch students with their verification status and attachments
-        const { data: studentsData, error: studentsError } = await supabase
-          .from("students")
-          .select(`
-            *,
-            profile:profiles(*),
-            verification_status:verification_status!left(*),
-            attachment:attachments(
-              *,
-              company:companies(*)
-            )
-          `)
-          .order('created_at', { ascending: false });
+      // Fetch supervisors
+      const { data: supervisorsData, error: supervisorsError } = await supabase
+        .from("supervisors")
+        .select();
 
-        if (studentsError) {
-          console.error("Error fetching students:", studentsError);
-          throw studentsError;
-        }
+      if (supervisorsError) {
+        console.error("Error fetching supervisors:", supervisorsError);
+        throw supervisorsError;
+      }
 
-        if (studentsData) {
-          console.log("Students data:", studentsData);
-          // Transform the data to match our Student type
-          const transformedStudents = studentsData.map(student => ({
-            ...student,
-            profile: Array.isArray(student.profile) ? student.profile : (student.profile ? [student.profile] : []),
-            verification_status: student.verification_status?.[0] || null,
-            attachment: Array.isArray(student.attachment) ? student.attachment : (student.attachment ? [student.attachment] : []),
-          }));
-          setStudents(transformedStudents as Student[]);
-        }
-
-        // Fetch supervisors with their student count and assigned students
-        const { data: supervisorsData, error: supervisorsError } = await supabase
-          .from("supervisors")
-          .select(`
-            *,
-            profile:profiles(*)
-          `);
-
-        if (supervisorsError) {
-          console.error("Error fetching supervisors:", supervisorsError);
-          throw supervisorsError;
-        }
-
-        let supervisorsWithDetails = [];
-        if (supervisorsData) {
-          supervisorsWithDetails = await Promise.all(
-            supervisorsData.map(async (supervisor) => {
-              // Fetch assigned students for each supervisor
-              const { data: assignments, error: assignmentsError } = await supabase
-                .from("supervisor_assignments")
-                .select(`
-                  id,
-                  student_id,
-                  student:students(
-                    id,
-                    student_id,
-                    program,
-                    year_of_study,
-                    profile:profiles(*),
-                    attachment:attachments(
-                      *,
-                      company:companies(*)
-                    )
-                  )
-                `)
-                .eq("supervisor_id", supervisor.id);
-              if (assignmentsError) {
-                console.error("Error fetching assigned students:", assignmentsError);
-                return { ...supervisor, students_count: 0, assigned_students: [] };
+      if (supervisorsData) {
+        console.log("Supervisors data:", supervisorsData);
+        // For each supervisor, fetch their assigned students using Django API
+        const supervisorsWithDetails = await Promise.all(
+          (supervisorsData.results || supervisorsData).map(async (supervisor: any) => {
+            try {
+              // Fetch assignments for this supervisor from Django API
+              const assignmentsResponse = await fetch(`${API_BASE_URL}/supervisor-assignments/?supervisor=${supervisor.id}`, {
+                headers: {
+                  'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+                  'Content-Type': 'application/json',
+                },
+              });
+              
+              let assignments = [];
+              if (assignmentsResponse.ok) {
+                const assignmentsData = await assignmentsResponse.json();
+                // Handle paginated response format
+                assignments = assignmentsData.results || assignmentsData;
               }
-              // Map assigned students
-              const assigned_students = (assignments || []).map(a => {
-                const stu = Array.isArray(a.student) ? a.student[0] : a.student;
-                const attachment = Array.isArray(stu?.attachment) ? stu.attachment[0] : stu?.attachment;
-                const company = Array.isArray(attachment?.company) ? attachment.company[0] : attachment?.company;
+              
+              // Extract student details from assignments (already included in Django API response)
+              const assignedStudents = assignments.map((assignment: any) => {
+                const student = assignment.student_detail;
                 return {
-                  id: stu?.id || '',
-                  student_id: stu?.student_id || '',
-                  program: stu?.program || '',
-                  year_of_study: stu?.year_of_study || '',
-                  profile: Array.isArray(stu?.profile) ? stu.profile : (stu?.profile ? [stu.profile] : []),
-                  assignedCompanyName: company?.name || '-',
-                  assignedCompanyLocation: company?.location || '-',
-                  attachment_period: attachment?.attachment_period || '-',
+                  ...student,
+                  assignment_id: assignment.id,
+                  // Add user info to student for consistency
+                  user: student.user
                 };
               });
+
               return {
                 ...supervisor,
-                profile: Array.isArray(supervisor.profile) ? supervisor.profile : (supervisor.profile ? [supervisor.profile] : []),
-                students_count: assigned_students.length,
-                assigned_students,
+                students_count: assignedStudents.length,
+                assigned_students: assignedStudents
               };
-            })
-          );
-          setSupervisors(supervisorsWithDetails as SupervisorWithStudents[]);
-        }
-
-        // Fetch reimbursements
-        const { data: reimbursementsData, error: reimbursementsError } = await supabase
-          .from("reimbursements")
-          .select(`
-            *,
-            student:students!reimbursements_student_id_fkey(
-              *,
-              profile:profiles(*)
-            ),
-            company:companies!reimbursements_company_id_fkey(*),
-            supervisor:supervisors!reimbursements_supervisor_id_fkey(
-              *,
-              profile:profiles(*)
-            )
-          `);
-
-        if (reimbursementsError) {
-          console.error("Error fetching reimbursements:", reimbursementsError);
-          console.log("Continuing without reimbursements data");
-        } else {
-          console.log("Reimbursements data:", reimbursementsData);
-          setReimbursements(reimbursementsData || []);
-        }
-      } catch (error: any) {
-        console.error("Dashboard data fetch error:", error);
-        setError(error.message);
-        toast({
-          title: "Error",
-          description: "Failed to load dashboard data: " + error.message,
-          variant: "destructive",
-        });
-      } finally {
-        setLoading(false);
+            } catch (error) {
+              console.error(`Error fetching assignments for supervisor ${supervisor.id}:`, error);
+              return {
+                ...supervisor,
+                students_count: 0,
+                assigned_students: []
+              };
+            }
+          })
+        );
+        setSupervisors(supervisorsWithDetails);
       }
-    };
 
+      // Fetch reimbursements using Django API
+      try {
+        const reimbursementsResponse = await fetch(`${API_BASE_URL}/reimbursements/`, {
+          headers: {
+            'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        if (reimbursementsResponse.ok) {
+          const reimbursementsData = await reimbursementsResponse.json();
+          console.log("Reimbursements data:", reimbursementsData);
+          setReimbursements(reimbursementsData?.results || reimbursementsData || []);
+        } else {
+          console.error("Error fetching reimbursements:", reimbursementsResponse.status);
+        }
+      } catch (error) {
+        console.log("Continuing without reimbursements data", error);
+      }
+    } catch (error: any) {
+      console.error("Dashboard data fetch error:", error);
+      setError(error.message);
+      toast({
+        title: "Error",
+        description: "Failed to load dashboard data: " + error.message,
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
     fetchDashboardData();
+    
+    // Initialize automatic data integrity checker
+    automaticDataIntegrityChecker.start();
+    
+    // Cleanup function to stop checker when component unmounts
+    return () => {
+      automaticDataIntegrityChecker.stop();
+    };
   }, [currentUser, toast]);
 
   useEffect(() => {
@@ -368,11 +569,67 @@ const AdminDashboard = () => {
     toast({ title: "Template saved!" });
   };
 
-  const generateCustomIntroLetter = (studentName: string, regNo: string) => {
-    let content = letterTemplate;
-    content = content.replace(/\{\{name\}\}/gi, studentName);
-    content = content.replace(/\{\{admno\}\}/gi, regNo);
-    return content;
+  const generateCustomIntroLetter = (studentName: string, regNo: string, studentData?: any) => {
+    // Create placeholders object
+    const placeholders: Record<string, string> = {
+      name: studentName,
+      admno: regNo,
+      registration_number: regNo,
+      student_name: studentName,
+      reg_no: regNo,
+      date: new Date().toLocaleDateString('en-US', { 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+      })
+    };
+
+    // Add student-specific placeholders if data is available
+    if (studentData) {
+      // Year and program info
+      const yearText = studentData.year_of_study === 1 ? '1st' : 
+                      studentData.year_of_study === 2 ? '2nd' : 
+                      studentData.year_of_study === 3 ? '3rd' : 
+                      `${studentData.year_of_study}th`;
+      
+      const totalYears = studentData.program_type === 'diploma' ? 'two-year' : 'four-year';
+      const degreeType = studentData.program_type === 'diploma' ? 'Diploma' : 'Degree';
+      
+      Object.assign(placeholders, {
+        current_year: yearText,
+        year: yearText,
+        total_years: totalYears,
+        degree_type: degreeType,
+        program_name: studentData.program || 'Information Technology Program',
+        program: studentData.program || 'Information Technology Program',
+        course: studentData.program || 'Information Technology Program',
+        faculty: studentData.faculty || 'Faculty of Science',
+        department: studentData.department || 'Department of Computer and Information Science'
+      });
+    } else {
+      // Default values when no student data is available
+      Object.assign(placeholders, {
+        current_year: '3rd',
+        year: '3rd',
+        total_years: 'four-year',
+        degree_type: 'Degree',
+        faculty: 'Faculty of Science',
+        department: 'Department of Computer and Information Science',
+        program_name: 'Information Technology Program',
+        program: 'Information Technology Program',
+        course: 'Information Technology Program'
+      });
+    }
+    
+    // Session/period placeholder (default to current period)
+    const currentMonth = new Date().getMonth() + 1;
+    const defaultSession = currentMonth >= 1 && currentMonth <= 4 ? 'January-April' :
+                          currentMonth >= 5 && currentMonth <= 8 ? 'May-August' :
+                          'September-December';
+    placeholders.session = defaultSession;
+    placeholders.attachment_period = defaultSession;
+    
+    return replacePlaceholders(letterTemplate, placeholders);
   };
 
   const handleApproveStudent = async (studentId: string) => {
@@ -384,7 +641,7 @@ const AdminDashboard = () => {
       }
       // Fetch assigned supervisors
       const { data: assignments, error: assignmentsError } = await supabase
-        .from("supervisor_assignments")
+        .supervisor_assignments
         .select("supervisor_id")
         .eq("student_id", studentId);
       if (assignmentsError) throw assignmentsError;
@@ -548,33 +805,126 @@ const AdminDashboard = () => {
   };
 
   const handleViewSupervisor = (supervisorId: string) => {
-    const supervisor = supervisors.find(s => s.id === supervisorId);
-    if (!supervisor) return;
-    setSelectedSupervisor(supervisor);
-    setShowViewSupervisorModal(true);
+    console.log("Viewing supervisor:", supervisorId);
+    // TODO: Implement view supervisor functionality
+  };
+
+  // Function to open delete confirmation modal
+  const openDeleteConfirmation = (type: 'student' | 'supervisor', id: string, name: string) => {
+    // For supervisors, check if they have assigned students
+    const supervisor = supervisors.find(s => s.id === id);
+    const assignedStudentsCount = supervisor?.assigned_students?.length || 0;
+    
+    setDeleteModal({
+      isOpen: true,
+      type,
+      id,
+      name,
+      isLoading: false,
+      assignedStudentsCount
+    });
+  };
+
+  // Function to handle confirmed deletion
+  const handleConfirmDelete = async () => {
+    if (!deleteModal.type || !deleteModal.id) return;
+
+    setDeleteModal(prev => ({ ...prev, isLoading: true }));
+
+    try {
+      if (deleteModal.type === 'student') {
+        // Get the user ID from the student record first
+        const student = students.find(s => s.id === deleteModal.id);
+        if (!student?.user?.id) {
+          throw new Error('Student user ID not found');
+        }
+        
+        // Delete the USER record (Django CASCADE will delete Student, Profile automatically)
+        const deleteResponse = await supabase
+          .from('users')
+          .delete();
+        
+        const { error } = await deleteResponse.eq('id', student.user.id);
+
+        if (error) throw error;
+
+        // Refresh dashboard data to ensure consistency
+        await fetchDashboardData();
+        
+        toast({
+          title: "Student Deleted",
+          description: "Student record and user account have been successfully deleted.",
+        });
+      } else if (deleteModal.type === 'supervisor') {
+        // Get the user ID from the supervisor record first  
+        const supervisor = supervisors.find(s => s.id === deleteModal.id);
+        if (!supervisor?.user?.id) {
+          throw new Error('Supervisor user ID not found');
+        }
+        
+        // Delete the USER record (Django CASCADE will delete Supervisor, Profile automatically)
+        const deleteResponse = await supabase
+          .from('users')
+          .delete();
+        
+        const { error } = await deleteResponse.eq('id', supervisor.user.id);
+
+        if (error) throw error;
+
+        // Refresh dashboard data to ensure consistency after cascade deletion
+        await fetchDashboardData();
+        
+        toast({
+          title: "Supervisor Deleted",
+          description: `Supervisor and all associated data (${deleteModal.assignedStudentsCount || 0} assignments, evaluations, reimbursements) have been successfully deleted.`,
+        });
+      }
+
+      // Close modal
+      setDeleteModal({ isOpen: false, type: null, id: '', name: '', isLoading: false, assignedStudentsCount: 0 });
+    } catch (error: any) {
+      console.error('Error deleting record:', error);
+      toast({
+        title: "Error",
+        description: error.message || "Failed to delete record. Please try again.",
+        variant: "destructive",
+      });
+      setDeleteModal(prev => ({ ...prev, isLoading: false }));
+    }
+  };
+
+  // Function to close delete modal
+  const closeDeleteModal = () => {
+    if (!deleteModal.isLoading) {
+      setDeleteModal({ isOpen: false, type: null, id: '', name: '', isLoading: false, assignedStudentsCount: 0 });
+    }
   };
 
   // Get all supervisor names for the filter dropdown
-  const allSupervisorNames = Array.from(new Set(supervisors.flatMap(sup => getProfileName(sup.profile ?? [])))).filter(Boolean);
+  const allSupervisorNames = Array.from(new Set(supervisors.map(sup => getUserName(sup.user)))).filter(name => name !== '-');
 
-  // Update filteredStudents to apply supervisor and period filters
+  // Update filteredStudents to apply period, status, and search filters
   const filteredStudents = students.filter(student => {
-    // Supervisor filter: check if any assigned supervisor matches
-    const assignedSupervisors = supervisors.filter(sup =>
-      (sup.assigned_students || []).some(stu => stu.id === student.id)
-    );
-    const supervisorNames = assignedSupervisors.map(sup => getProfileName(sup.profile ?? []));
-    const matchesSupervisor = supervisorFilter === 'all' || supervisorNames.includes(supervisorFilter);
-    // Period filter
-    const matchesPeriod = periodFilter === 'all' || (student.attachment?.[0]?.attachment_period === periodFilter);
-    // Existing search term filter
-    const matchesSearch = getProfileName(student.profile ?? []).toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (typeof student.student_id === 'string' && student.student_id.toLowerCase().includes(searchTerm.toLowerCase()));
-    return matchesSupervisor && matchesPeriod && matchesSearch;
+    // Period filter - use actual period if available, fall back to planned period
+    const displayedPeriod = student.attachments?.[0]?.attachment_period || student.attachment_period;
+    const matchesPeriod = attachmentPeriodFilter === '' || attachmentPeriodFilter === 'all' || (displayedPeriod === attachmentPeriodFilter);
+    
+    // Status filter
+    const isVerified = student.verification_status?.is_verified === true && student.verification_status?.fee_verified === true;
+    const matchesStatus = statusFilter === 'all' || 
+      (statusFilter === 'verified' && isVerified) || 
+      (statusFilter === 'pending' && !isVerified);
+    
+    // Search term filter
+    const studentName = getUserName(student.user);
+    const matchesSearch = studentName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (student.student_id && student.student_id.toLowerCase().includes(searchTerm.toLowerCase()));
+    
+    return matchesPeriod && matchesStatus && matchesSearch;
   });
   const filteredSupervisors = supervisors.filter(supervisor =>
-    getProfileName(supervisor.profile ?? []).toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (typeof supervisor.id === 'string' && supervisor.id.toLowerCase().includes(searchTerm.toLowerCase()))
+    getUserName(supervisor.user).toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (supervisor.id && supervisor.id.toLowerCase().includes(searchTerm.toLowerCase()))
   );
   const filteredReimbursements = reimbursements.filter(r => {
     const supervisorProfileArr = r.supervisor?.profile as any[];
@@ -595,27 +945,13 @@ const AdminDashboard = () => {
     );
   });
 
-  // Update filteredSupervisorsForAssigned to apply both dropdown and search filters
+  // Update filteredSupervisorsForAssigned to apply search filter only
   const filteredSupervisorsForAssigned = supervisors.filter(sup => {
-    const name = getProfileName(sup.profile ?? []);
-    const matchesDropdown = supervisorFilter === 'all' || name === supervisorFilter;
+    const name = getUserName(sup.user);
     const matchesSearch = supervisorSearch === '' || name.toLowerCase().includes(supervisorSearch.toLowerCase());
-    return matchesDropdown && matchesSearch;
+    return matchesSearch;
   });
 
-  useEffect(() => {
-    if (!currentUser) return;
-    const fetchMessages = async () => {
-      const { data } = await supabase
-        .from("messages")
-        .select("*, sender:profiles(id, first_name, last_name), read")
-        .eq("receiver_id", currentUser.id)
-        .order("created_at", { ascending: false });
-      setMessages(data || []);
-      setUnreadCount((data || []).filter((msg: any) => !msg.read).length);
-    };
-    fetchMessages();
-  }, [currentUser]);
 
   if (loading) {
     return (
@@ -638,31 +974,7 @@ const AdminDashboard = () => {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <header className="bg-white shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
-          <h1 className="text-xl font-semibold text-gray-900">Admin Dashboard</h1>
-          <div className="flex items-center gap-4">
-            <NotificationPopover
-              messages={messages}
-              unreadCount={unreadCount}
-              onReply={async (msg, reply) => {
-                await supabase.from("messages").insert({ sender_id: currentUser.id, receiver_id: msg.sender.id, content: reply });
-                setUnreadCount(c => c + 1);
-              }}
-              onViewAll={() => {
-                // Optionally navigate to settings/messages tab
-                document.querySelector('button[value="settings"]')?.click();
-              }}
-            />
-            <Button 
-              variant="outline" 
-              onClick={() => logout()}
-            >
-              Sign Out
-            </Button>
-          </div>
-        </div>
-      </header>
+      <NavBar title="Admin Dashboard" />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Stats Section */}
@@ -689,8 +1001,7 @@ const AdminDashboard = () => {
                   <p className="text-2xl font-bold">
                     {students.filter(s =>
                       s.verification_status?.is_verified === true &&
-                      s.verification_status?.fee_verified === true &&
-                      !!s.attachment?.[0]?.attachment_period
+                      s.verification_status?.fee_verified === true
                     ).length}
                   </p>
                 </div>
@@ -721,7 +1032,11 @@ const AdminDashboard = () => {
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">Total Reimbursements</p>
                   <p className="text-2xl font-bold">
-                    Ksh {reimbursements.reduce((acc, curr) => acc + curr.amount, 0).toLocaleString()}
+                    Ksh {reimbursements.reduce((acc, curr) => {
+                      const studentFee = 1000;
+                      const calculatedAmount = (globalRate * (parseFloat(curr.distance) || 0)) + globalLunch + studentFee;
+                      return acc + calculatedAmount;
+                    }, 0).toLocaleString()}
                   </p>
                 </div>
                 <div className="p-2 bg-purple-100 rounded-full">
@@ -776,16 +1091,6 @@ const AdminDashboard = () => {
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Select defaultValue="all">
-                      <SelectTrigger className="w-32">
-                        <SelectValue placeholder="Status" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">All</SelectItem>
-                        <SelectItem value="verified">Verified</SelectItem>
-                        <SelectItem value="pending">Pending</SelectItem>
-                      </SelectContent>
-                    </Select>
                     <Select value={attachmentPeriodFilter} onValueChange={setAttachmentPeriodFilter}>
                       <SelectTrigger className="w-40">
                         <SelectValue placeholder="Attachment Period" />
@@ -810,6 +1115,7 @@ const AdminDashboard = () => {
                       <TableHead className="px-4 py-2">Program</TableHead>
                       <TableHead className="px-4 py-2">Year</TableHead>
                       <TableHead className="px-4 py-2">Status</TableHead>
+                      <TableHead className="px-4 py-2">Final Grade</TableHead>
                       <TableHead className="px-4 py-2">Attachment Period</TableHead>
                       <TableHead className="px-4 py-2">Actions</TableHead>
                     </TableRow>
@@ -817,22 +1123,33 @@ const AdminDashboard = () => {
                   <TableBody>
                     {filteredStudents.map((student) => (
                       <TableRow key={student.id}>
-                        <TableCell className="px-4 py-2">{student.student_id}</TableCell>
-                        <TableCell className="px-4 py-2">{String(getProfileName(student.profile ?? []) || "-")}</TableCell>
-                        <TableCell className="px-4 py-2">{String(student.program || "-")}</TableCell>
-                        <TableCell className="px-4 py-2">{student.year_of_study}</TableCell>
+                        <TableCell className="px-4 py-2">{student.student_id || "-"}</TableCell>
+                        <TableCell className="px-4 py-2">{getUserName(student.user)}</TableCell>
+                        <TableCell className="px-4 py-2">{student.program || "-"}</TableCell>
+                        <TableCell className="px-4 py-2">{student.year_of_study || "-"}</TableCell>
                         <TableCell className="px-4 py-2">
                           <Badge variant={
-                            student.verification_status?.is_verified === true && student.verification_status?.fee_verified === true && !!student.attachment?.[0]?.attachment_period
+                            student.verification_status?.is_verified === true && student.verification_status?.fee_verified === true
                               ? "default"
                               : "outline"
                           }>
-                            {student.verification_status?.is_verified === true && student.verification_status?.fee_verified === true && !!student.attachment?.[0]?.attachment_period
+                            {student.verification_status?.is_verified === true && student.verification_status?.fee_verified === true
                               ? "Eligible"
                               : "Not Eligible"}
                           </Badge>
                         </TableCell>
-                        <TableCell className="px-4 py-2">{student.attachment?.[0]?.attachment_period || "-"}</TableCell>
+                        <TableCell className="px-4 py-2">
+                          {student.final_grade ? (
+                            <Badge variant="secondary" className="font-mono">
+                              {student.final_grade}/100
+                            </Badge>
+                          ) : (
+                            <span className="text-muted-foreground text-sm">Not graded</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="px-4 py-2">
+                          {student.attachments?.[0]?.attachment_period || student.attachment_period || "-"}
+                        </TableCell>
                         <TableCell className="px-4 py-2">
                           <div className="flex gap-2">
                             <Button 
@@ -855,6 +1172,13 @@ const AdminDashboard = () => {
                               onClick={() => { setSelectedStudent(student); setShowViewModal(true); }}
                             >
                               View
+                            </Button>
+                            <Button 
+                              variant="destructive" 
+                              size="sm"
+                              onClick={() => openDeleteConfirmation('student', student.id, getUserName(student.user))}
+                            >
+                              Delete
                             </Button>
                           </div>
                         </TableCell>
@@ -899,14 +1223,40 @@ const AdminDashboard = () => {
                           <TableHead className="px-4 py-2">Supervisor</TableHead>
                           <TableHead className="px-4 py-2">Department</TableHead>
                           <TableHead className="px-4 py-2">Assigned Students</TableHead>
+                          <TableHead className="px-4 py-2">Actions</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {filteredSupervisors.map(sup => (
                           <TableRow key={sup.id}>
-                            <TableCell className="px-4 py-2">{String(getProfileName(sup.profile ?? []) || "-")}</TableCell>
-                            <TableCell className="px-4 py-2">{sup.department}</TableCell>
+                            <TableCell className="px-4 py-2">{getUserName(sup.user)}</TableCell>
+                            <TableCell className="px-4 py-2">{sup.department || "-"}</TableCell>
                             <TableCell className="px-4 py-2">{sup.assigned_students?.length || 0}</TableCell>
+                            <TableCell className="px-4 py-2">
+                              <div className="flex gap-2">
+                                <Button 
+                                  variant="outline" 
+                                  size="sm"
+                                  onClick={() => handleEditSupervisor(sup.id)}
+                                >
+                                  Edit
+                                </Button>
+                                <Button 
+                                  variant="ghost" 
+                                  size="sm"
+                                  onClick={() => handleViewSupervisor(sup.id)}
+                                >
+                                  View
+                                </Button>
+                                <Button 
+                                  variant="destructive" 
+                                  size="sm"
+                                  onClick={() => openDeleteConfirmation('supervisor', sup.id, getUserName(sup.user))}
+                                >
+                                  Delete
+                                </Button>
+                              </div>
+                            </TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
@@ -928,15 +1278,6 @@ const AdminDashboard = () => {
                       </CardHeader>
                       <CardContent>
                         <div className="flex gap-4 mb-4">
-                          <Select value={supervisorFilter} onValueChange={setSupervisorFilter}>
-                            <SelectTrigger className="w-48"><SelectValue placeholder="Filter by Supervisor" /></SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="all">All Supervisors</SelectItem>
-                              {allSupervisorNames.map(name => (
-                                <SelectItem key={name} value={name}>{name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
                           <Input
                             className="w-64"
                             placeholder="Search supervisor..."
@@ -960,43 +1301,52 @@ const AdminDashboard = () => {
                               <TableHead className="px-4 py-2">Department</TableHead>
                               <TableHead className="px-4 py-2">Student</TableHead>
                               <TableHead className="px-4 py-2">Student ID</TableHead>
-                              <TableHead className="px-4 py-2">Phone Number</TableHead>
                               <TableHead className="px-4 py-2">Program</TableHead>
                               <TableHead className="px-4 py-2">Year</TableHead>
+                              <TableHead className="px-4 py-2">Phone Number</TableHead>
+                              <TableHead className="px-4 py-2">Attachment Period</TableHead>
                               <TableHead className="px-4 py-2">Company</TableHead>
                               <TableHead className="px-4 py-2">Company Location</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {filteredSupervisorsForAssigned.flatMap(sup =>
-                              (sup.assigned_students || [])
-                                .filter(stu => periodFilter === 'all' || stu.attachment_period === periodFilter)
+                            {filteredSupervisorsForAssigned.flatMap(sup => {
+                              // Deduplicate assignments by assignment_id
+                              const uniqueStudents = (sup.assigned_students || []).reduce((acc: any[], stu: any) => {
+                                if (!acc.find(existing => existing.assignment_id === stu.assignment_id)) {
+                                  acc.push(stu);
+                                }
+                                return acc;
+                              }, []);
+
+                              return uniqueStudents
+                                .filter(stu => {
+                                  const displayedPeriod = stu.attachments?.[0]?.attachment_period || stu.attachment_period;
+                                  return periodFilter === 'all' || displayedPeriod === periodFilter;
+                                })
                                 .map(stu => {
-                                  const studentName = Array.isArray(stu.profile)
-                                    ? getProfileName(stu.profile)
-                                    : getProfileName([stu.profile]);
-                                  const phoneNumber = Array.isArray(stu.profile) && stu.profile.length > 0 && 'phone_number' in stu.profile[0] ? stu.profile[0].phone_number || 'N/A' : 'N/A';
-                                  const assignedCompanyName = stu.assignedCompanyName || '-';
-                                  const assignedCompanyLocation = stu.assignedCompanyLocation || '-';
-                                  console.log('Assigned Student Debug:', {
-                                    stu,
-                                    company: stu.company
-                                  });
+                                  const studentName = getUserName(stu.user);
+                                  const phoneNumber = stu.phone_number || stu.user?.phone_number || 'N/A';
+                                  const attachmentPeriod = stu.attachments?.[0]?.attachment_period || stu.attachment_period || '-';
+                                  const companyName = getCompanyName(stu);
+                                  const companyLocation = getCompanyLocation(stu);
+                                  
                                   return (
-                                    <TableRow key={sup.id + '-' + stu.id}>
-                                      <TableCell className="px-4 py-2">{String(getProfileName(sup.profile ?? []) || "-")}</TableCell>
-                                      <TableCell className="px-4 py-2">{sup.department}</TableCell>
-                                      <TableCell className="px-4 py-2">{String(studentName || "-")}</TableCell>
-                                      <TableCell className="px-4 py-2">{stu.student_id}</TableCell>
+                                    <TableRow key={stu.assignment_id || `${sup.id}-${stu.id}-${stu.student_id}`}>
+                                      <TableCell className="px-4 py-2">{getUserName(sup.user)}</TableCell>
+                                      <TableCell className="px-4 py-2">{sup.department || "-"}</TableCell>
+                                      <TableCell className="px-4 py-2">{studentName}</TableCell>
+                                      <TableCell className="px-4 py-2">{stu.student_id || "-"}</TableCell>
+                                      <TableCell className="px-4 py-2">{stu.program || "-"}</TableCell>
+                                      <TableCell className="px-4 py-2">{stu.year_of_study || "-"}</TableCell>
                                       <TableCell className="px-4 py-2">{phoneNumber}</TableCell>
-                                      <TableCell className="px-4 py-2">{String(stu.program || "-")}</TableCell>
-                                      <TableCell className="px-4 py-2">{stu.year_of_study}</TableCell>
-                                      <TableCell className="px-4 py-2">{String(assignedCompanyName)}</TableCell>
-                                      <TableCell className="px-4 py-2">{String(assignedCompanyLocation)}</TableCell>
+                                      <TableCell className="px-4 py-2">{attachmentPeriod}</TableCell>
+                                      <TableCell className="px-4 py-2">{companyName}</TableCell>
+                                      <TableCell className="px-4 py-2">{companyLocation}</TableCell>
                                     </TableRow>
                                   );
-                                })
-                            )}
+                                });
+                            })}
                           </TableBody>
                         </Table>
                       </CardContent>
@@ -1028,7 +1378,11 @@ const AdminDashboard = () => {
                         id="globalRate"
                         type="number"
                         value={globalRate}
-                        onChange={(e) => setGlobalRate(Number(e.target.value))}
+                        onChange={(e) => {
+                          const newRate = Number(e.target.value);
+                          setGlobalRate(newRate);
+                          localStorage.setItem('globalRate', newRate.toString());
+                        }}
                         className="w-24"
                         placeholder="e.g. 20"
                         title="Set the reimbursement rate per kilometer"
@@ -1041,42 +1395,60 @@ const AdminDashboard = () => {
                         id="globalLunch"
                         type="number"
                         value={globalLunch}
-                        onChange={(e) => setGlobalLunch(Number(e.target.value))}
+                        onChange={(e) => {
+                          const newLunch = Number(e.target.value);
+                          setGlobalLunch(newLunch);
+                          localStorage.setItem('globalLunch', newLunch.toString());
+                        }}
                         className="w-24"
                         placeholder="e.g. 200"
                         title="Set the daily lunch reimbursement"
                       />
                       <span>KSH</span>
                     </div>
-                    <Select defaultValue="all">
-                      <SelectTrigger className="w-32">
-                        <SelectValue placeholder="Status" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">All</SelectItem>
-                        <SelectItem value="approved">Approved</SelectItem>
-                        <SelectItem value="pending">Pending</SelectItem>
-                      </SelectContent>
-                    </Select>
                   </div>
                 </div>
               </CardHeader>
               <CardContent>
+                <Button onClick={() => exportReimbursements()}>Export Reimbursements</Button>
                 <Button onClick={async () => {
                   try {
-                    // Fetch all reimbursements
-                    const { data: allReimbs, error } = await supabase.from('reimbursements').select('*');
-                    if (error) throw error;
-                    // For each, recalculate amount and update
-                    for (const r of allReimbs) {
-                      const newAmount = (globalRate * ((r.distance || 0) * 2)) + globalLunch;
-                      const { error: updateError } = await supabase
-                        .from('reimbursements')
-                        .update({ amount: newAmount, rate: globalRate, lunch: globalLunch })
-                        .eq('id', r.id);
-                      if (updateError) throw updateError;
+                    // Fetch all reimbursements using Django API
+                    const response = await fetch(`${API_BASE_URL}/reimbursements/`, {
+                      headers: {
+                        'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+                        'Content-Type': 'application/json',
+                      },
+                    });
+                    
+                    if (!response.ok) throw new Error('Failed to fetch reimbursements');
+                    const allReimbs = await response.json();
+                    const reimbursementsList = allReimbs.results || allReimbs;
+                    
+                    // Update each reimbursement with new rates using correct formula
+                    for (const r of reimbursementsList) {
+                      const studentFee = 1000; // KSH 1000 per student for supervisors
+                      const newAmount = (globalRate * r.distance) + globalLunch + studentFee;
+                      
+                      const updateResponse = await fetch(`${API_BASE_URL}/reimbursements/${r.id}/`, {
+                        method: 'PATCH',
+                        headers: {
+                          'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+                          'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                          amount: newAmount,
+                          rate: globalRate,
+                          lunch: globalLunch
+                        }),
+                      });
+                      
+                      if (!updateResponse.ok) throw new Error(`Failed to update reimbursement ${r.id}`);
                     }
-                    toast({ title: 'Reimbursements updated!' });
+                    
+                    // Refresh the reimbursements data
+                    fetchDashboardData();
+                    toast({ title: 'Reimbursements updated with new rates!' });
                   } catch (err) {
                     toast({ title: 'Error updating reimbursements', description: err.message, variant: 'destructive' });
                     console.error('Update reimbursements error:', err);
@@ -1097,23 +1469,25 @@ const AdminDashboard = () => {
                         <TableHead className="px-4 py-2">Supervisor</TableHead>
                         <TableHead className="px-4 py-2">Student</TableHead>
                         <TableHead className="px-4 py-2">Company</TableHead>
+                        <TableHead className="px-4 py-2">Supervision Visits</TableHead>
                         <TableHead className="px-4 py-2">Amount</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {filteredReimbursements.map((r, idx) => {
-                        const supervisorProfileArr = r.supervisor?.profile as any[];
-                        const supervisorName = Array.isArray(supervisorProfileArr) && supervisorProfileArr.length > 0 && supervisorProfileArr[0] != null
-                          ? `${(supervisorProfileArr[0] as any).first_name || ''} ${(supervisorProfileArr[0] as any).last_name || ''}`.trim() || '-'
-                          : (r.supervisor?.profile && !Array.isArray(r.supervisor.profile) && typeof r.supervisor.profile === 'object' && 'first_name' in r.supervisor.profile ? `${(r.supervisor.profile as any).first_name} ${(r.supervisor.profile as any).last_name}`.trim() : '-');
-                        const studentProfileArr = r.student?.profile as any[];
-                        const studentName = Array.isArray(studentProfileArr) && studentProfileArr.length > 0 && studentProfileArr[0] != null
-                          ? `${(studentProfileArr[0] as any).first_name || ''} ${(studentProfileArr[0] as any).last_name || ''}`.trim() || '-'
-                          : (r.student?.profile && !Array.isArray(r.student.profile) && typeof r.student.profile === 'object' && 'first_name' in r.student.profile ? `${(r.student.profile as any).first_name} ${(r.student.profile as any).last_name}`.trim() : '-');
-                        const companyArr = r.company as any[];
-                        const companyName = Array.isArray(companyArr) && companyArr.length > 0 && companyArr[0] != null
-                          ? (companyArr[0] as any).name || '-' : (r.company && !Array.isArray(r.company) && typeof r.company === 'object' && 'name' in r.company ? (r.company as any).name : '-');
-                        const displayAmount = (globalRate * ((r.distance || 0) * 2)) + globalLunch;
+                        // Django API format: nested objects with user data
+                        const supervisorName = r.supervisor?.user 
+                          ? `${r.supervisor.user.first_name || ''} ${r.supervisor.user.last_name || ''}`.trim() || '-'
+                          : '-';
+                        const studentName = r.student?.user
+                          ? `${r.student.user.first_name || ''} ${r.student.user.last_name || ''}`.trim() || '-'
+                          : '-';
+                        const companyName = r.company?.name || '-';
+                        
+                        // Calculate amount in real-time using current admin rates
+                        const studentFee = 1000; // KSH 1000 per student for supervisors
+                        const displayAmount = (globalRate * (parseFloat(r.distance) || 0)) + globalLunch + studentFee;
+                        const supervisionVisits = r.supervision_visits || 1;
                         console.log('Reimbursement Debug:', {
                           r,
                           supervisor: r.supervisor,
@@ -1125,7 +1499,8 @@ const AdminDashboard = () => {
                             <TableCell className="px-4 py-2">{supervisorName}</TableCell>
                             <TableCell className="px-4 py-2">{studentName}</TableCell>
                             <TableCell className="px-4 py-2">{companyName}</TableCell>
-                            <TableCell className="px-4 py-2">{displayAmount != null ? displayAmount.toLocaleString() : '-'}</TableCell>
+                            <TableCell className="px-4 py-2">{supervisionVisits}</TableCell>
+                            <TableCell className="px-4 py-2">KSH {displayAmount != null ? displayAmount.toLocaleString() : '-'}</TableCell>
                           </TableRow>
                         );
                       })}
@@ -1136,6 +1511,7 @@ const AdminDashboard = () => {
             </Card>
           </TabsContent>
           
+
           {/* Statistics Tab */}
           <TabsContent value="statistics">
             <Card>
@@ -1156,7 +1532,11 @@ const AdminDashboard = () => {
                 <div>
                   <h3 className="font-semibold mb-2">Students per Program</h3>
                   <ResponsiveContainer width="100%" height={250}>
-                    <ReBarChart data={Object.entries(students.reduce((acc, s) => { acc[s.program] = (acc[s.program] || 0) + 1; return acc; }, {} as Record<string, number>)).map(([program, count]) => ({ program: String(program), count: Number(count) }))}>
+                    <ReBarChart data={Object.entries(students.reduce((acc, s) => { 
+                      const program = s.program || 'Unknown';
+                      acc[program] = (acc[program] || 0) + 1; 
+                      return acc; 
+                    }, {} as Record<string, number>)).map(([program, count]) => ({ program: String(program), count: Number(count) }))}>
                       <XAxis dataKey="program" />
                       <YAxis allowDecimals={false} />
                       <Tooltip />
@@ -1170,8 +1550,8 @@ const AdminDashboard = () => {
                     <PieChart>
                       <Pie
                         data={[
-                          { name: "Eligible", value: students.filter(s => s.verification_status?.is_verified && s.verification_status?.fee_verified && s.attachment?.[0]?.attachment_period).length },
-                          { name: "Not Eligible", value: students.length - students.filter(s => s.verification_status?.is_verified && s.verification_status?.fee_verified && s.attachment?.[0]?.attachment_period).length }
+                          { name: "Eligible", value: students.filter(s => s.verification_status?.is_verified && s.verification_status?.fee_verified).length },
+                          { name: "Not Eligible", value: students.length - students.filter(s => s.verification_status?.is_verified && s.verification_status?.fee_verified).length }
                         ]}
                         dataKey="value"
                         nameKey="name"
@@ -1191,7 +1571,11 @@ const AdminDashboard = () => {
                 <div>
                   <h3 className="font-semibold mb-2">Supervisors per Department</h3>
                   <ResponsiveContainer width="100%" height={250}>
-                    <ReBarChart data={Object.entries(supervisors.reduce((acc, s) => { acc[s.department] = (acc[s.department] || 0) + 1; return acc; }, {} as Record<string, number>)).map(([department, count]) => ({ department: String(department), count: Number(count) }))}>
+                    <ReBarChart data={Object.entries(supervisors.reduce((acc, s) => { 
+                      const department = s.department || 'Unknown';
+                      acc[department] = (acc[department] || 0) + 1; 
+                      return acc; 
+                    }, {} as Record<string, number>)).map(([department, count]) => ({ department: String(department), count: Number(count) }))}>
                       <XAxis dataKey="department" />
                       <YAxis allowDecimals={false} />
                       <Tooltip />
@@ -1226,13 +1610,132 @@ const AdminDashboard = () => {
                 <div>
                   <h3 className="font-semibold mb-2">Students per Attachment Period</h3>
                   <ResponsiveContainer width="100%" height={250}>
-                    <ReBarChart data={Object.entries(students.reduce((acc, s) => { const period = s.attachment?.[0]?.attachment_period || '-'; acc[period] = (acc[period] || 0) + 1; return acc; }, {} as Record<string, number>)).map(([period, count]) => ({ period: String(period), count: Number(count) }))}>
+                    <ReBarChart data={Object.entries(students.reduce((acc, s) => { 
+                      const period = s.attachments?.[0]?.attachment_period || s.attachment_period || 'None'; 
+                      acc[period] = (acc[period] || 0) + 1; 
+                      return acc; 
+                    }, {} as Record<string, number>)).map(([period, count]) => ({ period: String(period), count: Number(count) }))}>
                       <XAxis dataKey="period" />
                       <YAxis allowDecimals={false} />
                       <Tooltip />
                       <Bar dataKey="count" fill="#f87171" />
                     </ReBarChart>
                   </ResponsiveContainer>
+                </div>
+                
+                {/* Enhanced Statistics */}
+                <div>
+                  <h3 className="font-semibold mb-2">Students per Department</h3>
+                  <ResponsiveContainer width="100%" height={250}>
+                    <ReBarChart data={Object.entries(students.reduce((acc, s) => { 
+                      const department = s.department || s.program || 'Unknown'; 
+                      acc[department] = (acc[department] || 0) + 1; 
+                      return acc; 
+                    }, {} as Record<string, number>)).map(([department, count]) => ({ department: String(department), count: Number(count) }))}>
+                      <XAxis dataKey="department" angle={-45} textAnchor="end" height={80} />
+                      <YAxis allowDecimals={false} />
+                      <Tooltip />
+                      <Bar dataKey="count" fill="#8b5cf6" />
+                    </ReBarChart>
+                  </ResponsiveContainer>
+                </div>
+                
+                <div>
+                  <h3 className="font-semibold mb-2">Students per Year of Study</h3>
+                  <ResponsiveContainer width="100%" height={250}>
+                    <ReBarChart data={Object.entries(students.reduce((acc, s) => { 
+                      const year = `Year ${s.year_of_study || 'Unknown'}`; 
+                      acc[year] = (acc[year] || 0) + 1; 
+                      return acc; 
+                    }, {} as Record<string, number>)).map(([year, count]) => ({ year: String(year), count: Number(count) }))}>
+                      <XAxis dataKey="year" />
+                      <YAxis allowDecimals={false} />
+                      <Tooltip />
+                      <Bar dataKey="count" fill="#10b981" />
+                    </ReBarChart>
+                  </ResponsiveContainer>
+                </div>
+                
+                <div>
+                  <h3 className="font-semibold mb-2">Supervisor Workload Distribution</h3>
+                  <ResponsiveContainer width="100%" height={250}>
+                    <ReBarChart data={supervisors.map(sup => ({
+                      supervisor: getUserName(sup.user),
+                      students: sup.students_count || 0
+                    }))}>
+                      <XAxis dataKey="supervisor" angle={-45} textAnchor="end" height={80} />
+                      <YAxis allowDecimals={false} />
+                      <Tooltip />
+                      <Bar dataKey="students" fill="#f59e0b" />
+                    </ReBarChart>
+                  </ResponsiveContainer>
+                </div>
+                
+                <div>
+                  <h3 className="font-semibold mb-2">Total Reimbursement Amount</h3>
+                  <div className="text-center p-8">
+                    <div className="text-4xl font-bold text-green-600">
+                      KSH {reimbursements.reduce((total, r) => {
+                        const studentFee = 1000;
+                        const supervisionVisits = r.supervision_visits || 1;
+                        const amount = (globalRate * ((r.distance || 0) * 2)) + studentFee + (globalLunch * supervisionVisits);
+                        return total + amount;
+                      }, 0).toLocaleString()}
+                    </div>
+                    <div className="text-lg text-gray-600 mt-2">
+                      Total Financial Impact
+                    </div>
+                    <div className="grid grid-cols-2 gap-4 mt-4 text-sm">
+                      <div className="bg-blue-50 p-3 rounded">
+                        <div className="font-semibold text-blue-800">Approved</div>
+                        <div className="text-blue-600">
+                          KSH {reimbursements.filter(r => r.status === 'approved').reduce((total, r) => {
+                            const studentFee = 1000;
+                            const supervisionVisits = r.supervision_visits || 1;
+                            const amount = (globalRate * ((r.distance || 0) * 2)) + studentFee + (globalLunch * supervisionVisits);
+                            return total + amount;
+                          }, 0).toLocaleString()}
+                        </div>
+                      </div>
+                      <div className="bg-yellow-50 p-3 rounded">
+                        <div className="font-semibold text-yellow-800">Pending</div>
+                        <div className="text-yellow-600">
+                          KSH {reimbursements.filter(r => r.status === 'pending').reduce((total, r) => {
+                            const studentFee = 1000;
+                            const supervisionVisits = r.supervision_visits || 1;
+                            const amount = (globalRate * ((r.distance || 0) * 2)) + studentFee + (globalLunch * supervisionVisits);
+                            return total + amount;
+                          }, 0).toLocaleString()}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                <div>
+                  <h3 className="font-semibold mb-2">System Health Overview</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-green-50 p-4 rounded">
+                      <div className="text-2xl font-bold text-green-600">{students.filter(s => s.verification_status?.is_verified && s.verification_status?.fee_verified).length}</div>
+                      <div className="text-green-800">Verified Students</div>
+                      <div className="text-sm text-green-600">Ready for Attachment</div>
+                    </div>
+                    <div className="bg-orange-50 p-4 rounded">
+                      <div className="text-2xl font-bold text-orange-600">{students.filter(s => !s.verification_status?.is_verified || !s.verification_status?.fee_verified).length}</div>
+                      <div className="text-orange-800">Pending Verification</div>
+                      <div className="text-sm text-orange-600">Awaiting Review</div>
+                    </div>
+                    <div className="bg-blue-50 p-4 rounded">
+                      <div className="text-2xl font-bold text-blue-600">{supervisors.reduce((total, sup) => total + (sup.students_count || 0), 0)}</div>
+                      <div className="text-blue-800">Total Assignments</div>
+                      <div className="text-sm text-blue-600">Student-Supervisor Pairs</div>
+                    </div>
+                    <div className="bg-purple-50 p-4 rounded">
+                      <div className="text-2xl font-bold text-purple-600">{supervisors.filter(sup => (sup.students_count || 0) >= 15).length}</div>
+                      <div className="text-purple-800">High Workload</div>
+                      <div className="text-sm text-purple-600">Supervisors with 15+ Students</div>
+                    </div>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -1249,20 +1752,134 @@ const AdminDashboard = () => {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <ReactQuill
-                  theme="snow"
-                  value={letterTemplate}
-                  onChange={setLetterTemplate}
-                  className="mb-2"
-                  style={{ background: 'white' }}
-                />
-                <div className="flex gap-2 mt-2">
-                  <Button onClick={saveTemplate}>Save Template</Button>
-                  <Button variant="outline" onClick={() => setLetterTemplate("")}>Reset</Button>
-                </div>
-                <div className="mt-4">
-                  <h4 className="font-semibold mb-1">Preview:</h4>
-                  <div className="bg-gray-100 p-2 rounded text-xs whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: generateCustomIntroLetter("John Doe", "STU2023001") }} />
+                <div className="space-y-6">
+                  {/* File Upload Section */}
+                  <div>
+                    <h4 className="font-semibold mb-2">Upload Template File</h4>
+                    <p className="text-sm text-gray-600 mb-3">
+                      Upload a Word document (.docx) or text file (.txt) to use as a template. 
+                      Use <code>{`{{name}}`}</code> for student name and <code>{`{{admno}}`}</code> for admission number.
+                    </p>
+                    <input
+                      type="file"
+                      accept=".docx,.txt,.doc"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          setUploadedLetterFile(file);
+                          try {
+                            const result = await processTemplateFile(file);
+                            if (result.success) {
+                              setLetterFileContent(result.content);
+                              // Use full template with headers and footers if available, otherwise use HTML content
+                              setLetterTemplate(result.fullTemplate || result.htmlContent || result.content);
+                              toast({ 
+                                title: "File uploaded!", 
+                                description: `Template loaded from ${file.name}${result.header ? ' (with header)' : ''}${result.footer ? ' (with footer)' : ''}. ${result.error ? `Note: ${result.error}` : ''}`
+                              });
+                            } else {
+                              toast({ 
+                                title: "Upload failed", 
+                                description: result.error || "Could not read file content.", 
+                                variant: "destructive" 
+                              });
+                            }
+                          } catch (error) {
+                            toast({ 
+                              title: "Error", 
+                              description: "Unexpected error processing file.", 
+                              variant: "destructive" 
+                            });
+                          }
+                        }
+                      }}
+                      className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                    />
+                    {uploadedLetterFile && (
+                      <p className="text-sm text-green-600 mt-2">
+                        Uploaded: {uploadedLetterFile.name}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="border-t pt-6">
+                    <h4 className="font-semibold mb-2">Edit Template</h4>
+                    <ReactQuill
+                      theme="snow"
+                      value={letterTemplate}
+                      onChange={setLetterTemplate}
+                      className="mb-2"
+                      style={{ background: 'white' }}
+                    />
+                    <div className="flex gap-2 mt-2">
+                      <Button onClick={saveTemplate}>Save Template</Button>
+                      <Button variant="outline" onClick={() => setLetterTemplate("")}>Reset</Button>
+                      {letterFileContent && (
+                        <Button 
+                          variant="outline" 
+                          onClick={() => {
+                            setLetterTemplate(letterFileContent);
+                            toast({ title: "Template restored from uploaded file" });
+                          }}
+                        >
+                          Restore from File
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="border-t pt-6">
+                    <h4 className="font-semibold mb-2">Preview</h4>
+                    <p className="text-sm text-gray-600 mb-2">
+                      This is how the letter will look for student "John Doe" with admission number "1056980":
+                    </p>
+                    <div className="bg-gray-100 p-4 rounded text-sm whitespace-pre-wrap border" dangerouslySetInnerHTML={{ 
+                      __html: generateCustomIntroLetter("John Doe", "1056980", {
+                        year_of_study: 2,
+                        program_type: 'diploma',
+                        faculty: 'Faculty of Science',
+                        department: 'Department of Computer and Information Science',
+                        program: 'Diploma in Information Technology'
+                      })
+                    }} />
+                  </div>
+
+                  <div className="border-t pt-6">
+                    <h4 className="font-semibold mb-2">Available Placeholders</h4>
+                    <div className="bg-blue-50 p-3 rounded">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <h5 className="font-medium text-sm mb-2">Student Information:</h5>
+                          <ul className="text-xs space-y-1">
+                            <li><code>{`{{name}}`}</code> - Student's full name</li>
+                            <li><code>{`{{admno}}`}</code> - Student's admission number</li>
+                            <li><code>{`{{registration_number}}`}</code> - Same as admno</li>
+                            <li><code>{`{{current_year}}`}</code> - Year of study (1st, 2nd, 3rd, etc.)</li>
+                          </ul>
+                        </div>
+                        <div>
+                          <h5 className="font-medium text-sm mb-2">Program Information:</h5>
+                          <ul className="text-xs space-y-1">
+                            <li><code>{`{{program_name}}`}</code> - Program name</li>
+                            <li><code>{`{{degree_type}}`}</code> - Diploma or Degree</li>
+                            <li><code>{`{{total_years}}`}</code> - Program duration</li>
+                            <li><code>{`{{faculty}}`}</code> - Faculty name</li>
+                            <li><code>{`{{department}}`}</code> - Department name</li>
+                          </ul>
+                        </div>
+                      </div>
+                      <div className="mt-3 pt-3 border-t border-blue-200">
+                        <h5 className="font-medium text-sm mb-2">System Generated:</h5>
+                        <ul className="text-xs space-y-1">
+                          <li><code>{`{{date}}`}</code> - Current date (auto-generated)</li>
+                          <li><code>{`{{session}}`}</code> - Current academic session (auto-calculated)</li>
+                        </ul>
+                      </div>
+                      <p className="text-xs text-blue-600 mt-3">
+                        All placeholders are automatically filled when students download their letters.
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -1358,13 +1975,13 @@ const AdminDashboard = () => {
                   try {
                     await supabase.from("messages").insert({
                       sender_id: currentUser.id,
-                      receiver_id: selectedStudent.profile?.[0]?.id,
+                      receiver_id: selectedStudent.user.id,
                       content: messageContent.trim(),
                     });
                     setMessageContent("");
                     setShowMessageModal(false);
                     toast({ title: "Message sent!" });
-                  } catch (err) {
+                  } catch (err: any) {
                     toast({ title: "Error sending message", description: err.message, variant: "destructive" });
                   } finally {
                     setMessageSending(false);
@@ -1372,7 +1989,7 @@ const AdminDashboard = () => {
                 }}
                 className="space-y-4"
               >
-                <Label>To: {String(getProfileName(selectedStudent.profile ?? []) || "-")}</Label>
+                <Label>To: {getUserName(selectedStudent.user)}</Label>
                 <textarea
                   ref={messageInputRef}
                   className="w-full border rounded p-2"
@@ -1394,14 +2011,14 @@ const AdminDashboard = () => {
             </DialogHeader>
             {selectedStudent && (
               <div className="space-y-2">
-                <div><b>Name:</b> {String(getProfileName(selectedStudent.profile ?? []) || "-")}</div>
-                <div><b>Student ID:</b> {selectedStudent.student_id}</div>
-                <div><b>Program:</b> {String(selectedStudent.program || "-")}</div>
-                <div><b>Year of Study:</b> {String(selectedStudent.year_of_study || "-")}</div>
-                <div><b>Email:</b> {selectedStudent.profile?.[0]?.email}</div>
-                <div><b>Phone:</b> {selectedStudent.profile?.[0]?.phone_number || "N/A"}</div>
-                <div><b>Company:</b> {selectedStudent.attachment?.[0]?.company?.[0]?.name || "N/A"}</div>
-                <div><b>Company Location:</b> {selectedStudent.attachment?.[0]?.company?.[0]?.location || "N/A"}</div>
+                <div><b>Name:</b> {getUserName(selectedStudent.user)}</div>
+                <div><b>Student ID:</b> {selectedStudent.student_id || "-"}</div>
+                <div><b>Program:</b> {selectedStudent.program || "-"}</div>
+                <div><b>Year of Study:</b> {selectedStudent.year_of_study || "-"}</div>
+                <div><b>Email:</b> {selectedStudent.user?.email || "-"}</div>
+                <div><b>Phone:</b> {selectedStudent.phone_number || selectedStudent.user?.phone_number || "N/A"}</div>
+                <div><b>Company:</b> {getCompanyName(selectedStudent)}</div>
+                <div><b>Company Location:</b> {getCompanyLocation(selectedStudent)}</div>
                 <div><b>Status:</b> {selectedStudent.verification_status?.is_verified ? "Verified" : selectedStudent.verification_status ? "Rejected" : "Pending"}</div>
               </div>
             )}
@@ -1497,10 +2114,10 @@ const AdminDashboard = () => {
             </DialogHeader>
             {selectedSupervisor && (
               <div className="space-y-2">
-                <div><b>Name:</b> {String(getProfileName(selectedSupervisor.profile ?? []) || "-")}</div>
-                <div><b>Email:</b> {selectedSupervisor.profile?.[0]?.email}</div>
-                <div><b>Department:</b> {selectedSupervisor.department}</div>
-                <div><b>Title:</b> {selectedSupervisor.title}</div>
+                <div><b>Name:</b> {getUserName(selectedSupervisor.user)}</div>
+                <div><b>Email:</b> {selectedSupervisor.user?.email || "-"}</div>
+                <div><b>Department:</b> {selectedSupervisor.department || "-"}</div>
+                <div><b>Title:</b> {selectedSupervisor.title || "-"}</div>
                 <div><b>Assigned Students:</b></div>
                 <ul className="list-disc pl-5">
                   {selectedSupervisor.assigned_students?.length ? (
@@ -1545,39 +2162,37 @@ const AdminDashboard = () => {
                 phoneNumber: { value: string };
               };
               try {
-                // 1. Create user in auth
-                const { data: authData, error: signUpError } = await supabase.auth.signUp({
+                // Create user via Django API
+                const registrationData = {
                   email: form.email.value,
                   password: form.password.value,
-                  options: {
-                    data: {
-                      first_name: form.firstName.value,
-                      last_name: form.lastName.value,
-                      role: 'student',
-                    },
-                  },
-                });
-                if (signUpError) throw signUpError;
-                if (!authData.user) throw new Error('User could not be created');
-                // 2. Insert into profiles
-                const { error: profileError } = await supabase.from('profiles').insert({
-                  id: authData.user.id,
+                  password_confirm: form.password.value,
                   first_name: form.firstName.value,
                   last_name: form.lastName.value,
-                  email: form.email.value,
-                  phone_number: form.phoneNumber.value,
                   role: 'student',
-                });
-                if (profileError) throw profileError;
-                // 3. Insert into students
-                const { error: studentError } = await supabase.from('students').insert({
-                  id: authData.user.id,
                   student_id: form.studentId.value,
                   program: form.program.value,
-                  year_of_study: form.yearOfStudy.value,
+                  year_of_study: parseInt(form.yearOfStudy.value),
+                  phone_number: form.phoneNumber.value,
+                };
+                
+                const response = await fetch(`${API_BASE_URL}/auth/register/`, {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify(registrationData),
                 });
-                if (studentError) throw studentError;
-                toast({ title: 'Student added!' });
+                
+                if (!response.ok) {
+                  const errorData = await response.json();
+                  throw new Error(errorData.detail || errorData.message || 'Registration failed');
+                }
+                toast({ 
+                  title: 'Student added successfully!', 
+                  description: `${form.firstName.value} ${form.lastName.value} has been added. Email: ${form.email.value}. Please provide them with their login credentials.` 
+                });
                 setShowAddStudentModal(false);
                 // Refresh dashboard data
                 window.location.reload();
@@ -1614,39 +2229,37 @@ const AdminDashboard = () => {
                 phoneNumber: { value: string };
               };
               try {
-                // 1. Create user in auth
-                const { data: authData, error: signUpError } = await supabase.auth.signUp({
+                // Create user via Django API
+                const registrationData = {
                   email: form.email.value,
                   password: form.password.value,
-                  options: {
-                    data: {
-                      first_name: form.firstName.value,
-                      last_name: form.lastName.value,
-                      role: 'supervisor',
-                    },
-                  },
-                });
-                if (signUpError) throw signUpError;
-                if (!authData.user) throw new Error('User could not be created');
-                // 2. Insert into profiles
-                const { error: profileError } = await supabase.from('profiles').insert({
-                  id: authData.user.id,
+                  password_confirm: form.password.value,
                   first_name: form.firstName.value,
                   last_name: form.lastName.value,
-                  email: form.email.value,
-                  phone_number: form.phoneNumber.value,
                   role: 'supervisor',
-                });
-                if (profileError) throw profileError;
-                // 3. Insert into supervisors
-                const { error: supervisorError } = await supabase.from('supervisors').insert({
-                  id: authData.user.id,
                   department: form.department.value,
                   title: form.title.value,
+                  phone_number: form.phoneNumber.value,
+                };
+                
+                const response = await fetch(`${API_BASE_URL}/auth/register/`, {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${tokenManager.getAccessToken()}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify(registrationData),
                 });
-                if (supervisorError) throw supervisorError;
-                toast({ title: 'Supervisor added!' });
-                // TODO: Send email to supervisor with credentials (use Supabase Edge Functions or external provider)
+                
+                if (!response.ok) {
+                  const errorData = await response.json();
+                  throw new Error(errorData.detail || errorData.message || 'Registration failed');
+                }
+                
+                toast({ 
+                  title: 'Supervisor added successfully!', 
+                  description: `${form.firstName.value} ${form.lastName.value} has been added. Email: ${form.email.value}. Please provide them with their login credentials.` 
+                });
                 setShowAddSupervisorModal(false);
                 // Refresh dashboard data
                 window.location.reload();
@@ -1665,6 +2278,19 @@ const AdminDashboard = () => {
             </form>
           </DialogContent>
         </Dialog>
+
+        {/* Delete Confirmation Modal */}
+        <DeleteConfirmationModal
+          isOpen={deleteModal.isOpen}
+          onClose={closeDeleteModal}
+          onConfirm={handleConfirmDelete}
+          title={`Delete ${deleteModal.type === 'student' ? 'Student' : 'Supervisor'}`}
+          description={`Are you sure you want to delete this ${deleteModal.type}? This action cannot be undone and will remove all associated data.`}
+          itemName={deleteModal.name}
+          isLoading={deleteModal.isLoading}
+          assignedStudentsCount={deleteModal.assignedStudentsCount}
+          deleteType={deleteModal.type}
+        />
       </main>
     </div>
   );

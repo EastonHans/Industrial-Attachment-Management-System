@@ -72,23 +72,93 @@ DEAN OF STUDENTS
 };
 
 /**
- * Downloads a letter as a PDF file
+ * Downloads a letter as a PDF file with proper formatting
  */
 export const downloadLetter = (content: string, filename: string): void => {
-  // Create a new PDF document
-  const doc = new jsPDF();
+  // Create a new PDF document with A4 size
+  const doc = new jsPDF('portrait', 'mm', 'a4');
   
-  // Split content into lines and add to PDF
+  // Page dimensions (A4: 210mm x 297mm)
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 20; // 20mm margins
+  const maxLineWidth = pageWidth - (2 * margin);
+  
+  // Font settings
+  doc.setFont('Times', 'normal');
+  doc.setFontSize(12);
+  
+  // Split content into lines
   const lines = content.split('\n');
-  let y = 20; // Starting y position
+  let y = margin; // Starting y position
   
   lines.forEach((line) => {
-    if (y > 280) { // If we're near the bottom of the page
-      doc.addPage(); // Add a new page
-      y = 20; // Reset y position
+    // Check if we need a new page
+    if (y > pageHeight - margin) {
+      doc.addPage();
+      y = margin;
     }
-    doc.text(line, 20, y);
-    y += 7; // Move down for next line
+    
+    // Handle empty lines
+    if (line.trim() === '') {
+      y += 5; // Add small space for empty lines
+      return;
+    }
+    
+    // Handle special formatting
+    if (line.includes('THE CATHOLIC UNIVERSITY OF EASTERN AFRICA')) {
+      doc.setFont('Times', 'bold');
+      doc.setFontSize(14);
+      // Center the university name
+      const textWidth = doc.getTextWidth(line);
+      const x = (pageWidth - textWidth) / 2;
+      doc.text(line, x, y);
+      doc.setFont('Times', 'normal');
+      doc.setFontSize(12);
+      y += 8;
+      return;
+    }
+    
+    // Handle department/faculty lines (smaller, centered)
+    if (line.includes('FACULTY') || line.includes('DEPARTMENT')) {
+      doc.setFontSize(11);
+      const textWidth = doc.getTextWidth(line);
+      const x = (pageWidth - textWidth) / 2;
+      doc.text(line, x, y);
+      doc.setFontSize(12);
+      y += 6;
+      return;
+    }
+    
+    // Handle subject line (bold)
+    if (line.startsWith('Re:')) {
+      doc.setFont('Times', 'bold');
+      doc.text(line, margin, y);
+      doc.setFont('Times', 'normal');
+      y += 8;
+      return;
+    }
+    
+    // Handle signature line
+    if (line.includes('___________')) {
+      y += 10; // Extra space before signature
+      doc.text(line, margin, y);
+      y += 6;
+      return;
+    }
+    
+    // Handle normal text with word wrapping
+    if (line.length > 0) {
+      const splitText = doc.splitTextToSize(line, maxLineWidth);
+      splitText.forEach((textLine: string) => {
+        if (y > pageHeight - margin) {
+          doc.addPage();
+          y = margin;
+        }
+        doc.text(textLine, margin, y);
+        y += 6; // Line height
+      });
+    }
   });
   
   // Save the PDF
