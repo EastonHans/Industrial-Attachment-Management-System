@@ -1,5 +1,5 @@
 {
-  "apiEndpoint": "https://api.example.com",
+  "apiEndpoint": "",
   "theme": {
     "primaryColor": "#007bff",
     "secondaryColor": "#6c757d",

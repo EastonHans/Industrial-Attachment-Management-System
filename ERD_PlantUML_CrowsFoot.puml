@@ -1,0 +1,202 @@
+@startuml Student_Industrial_Attachment_ERD_CrowsFoot
+!theme plain
+
+' Define entities with Crow's Foot ERD notation
+entity "User" {
+  * id : UUID <<PK>>
+  --
+  * email : string <<UK>>
+  * username : string
+  * first_name : string
+  * last_name : string
+  * role : string
+  created_at : datetime
+  updated_at : datetime
+}
+
+entity "Profile" {
+  * id : UUID <<PK>>
+  --
+  * user_id : UUID <<FK>>
+  first_name : string
+  last_name : string
+  phone_number : string
+  created_at : datetime
+  updated_at : datetime
+}
+
+entity "Student" {
+  * id : UUID <<PK>>
+  --
+  * user_id : UUID <<FK>>
+  * student_id : string <<UK>>
+  program : string
+  program_type : string
+  faculty : string
+  department : string
+  year_of_study : int
+  semester : int
+  attachment_period : string
+  phone_number : string
+  final_grade : decimal
+  grade_calculation_details : json
+  created_at : datetime
+  updated_at : datetime
+}
+
+entity "Supervisor" {
+  * id : UUID <<PK>>
+  --
+  * user_id : UUID <<FK>>
+  department : string
+  title : string
+  created_at : datetime
+  updated_at : datetime
+}
+
+entity "Company" {
+  * id : UUID <<PK>>
+  --
+  name : string
+  location : string
+  industry : string
+  description : string
+  address : string
+  contact_email : string
+  contact_phone : string
+  created_at : datetime
+  updated_at : datetime
+}
+
+entity "Attachment" {
+  * id : UUID <<PK>>
+  --
+  * student_id : UUID <<FK>>
+  * company_id : UUID <<FK>>
+  supervisor_id : UUID <<FK>>
+  start_date : date
+  end_date : date
+  status : string
+  address : string
+  created_at : datetime
+  updated_at : datetime
+}
+
+entity "SupervisorAssignment" {
+  * id : UUID <<PK>>
+  --
+  * student_id : UUID <<FK>>
+  * supervisor_id : UUID <<FK>>
+  status : string
+  created_at : datetime
+  updated_at : datetime
+}
+
+entity "VerificationStatus" {
+  * id : UUID <<PK>>
+  --
+  * student_id : UUID <<FK>>
+  is_verified : boolean
+  verification_date : datetime
+  verification_details : json
+  fee_verified : boolean
+  fee_verification_date : datetime
+  created_at : datetime
+  updated_at : datetime
+}
+
+entity "WeeklyLog" {
+  * id : UUID <<PK>>
+  --
+  * student_id : UUID <<FK>>
+  week_number : int
+  date : date
+  day : string
+  task_assigned : text
+  attachee_remarks : text
+  trainer_remarks : text
+  supervisor_remarks : text
+  trainer_signature : text
+  supervisor_signature : text
+  created_at : datetime
+  updated_at : datetime
+}
+
+entity "Evaluation" {
+  * id : UUID <<PK>>
+  --
+  attachment_id : UUID <<FK>>
+  * student_id : UUID <<FK>>
+  * supervisor_id : UUID <<FK>>
+  * evaluator_id : UUID <<FK>>
+  evaluation_date : date
+  performance_rating : int
+  availability_of_documents : int
+  organization_of_logbook : int
+  adaptability : int
+  teamwork : int
+  accomplishment : int
+  presence : int
+  communication_skills : int
+  mannerism : int
+  understanding_of_tasks : int
+  oral_presentation : int
+  total : int
+  comments : text
+  overall_assessment : text
+  created_at : datetime
+  updated_at : datetime
+}
+
+entity "Reimbursement" {
+  * id : UUID <<PK>>
+  --
+  * student_id : UUID <<FK>>
+  * company_id : UUID <<FK>>
+  supervisor_id : UUID <<FK>>
+  amount : decimal
+  distance : decimal
+  rate : decimal
+  lunch : decimal
+  supervision_visits : int
+  status : string
+  created_at : datetime
+  updated_at : datetime
+}
+
+entity "Message" {
+  * id : UUID <<PK>>
+  --
+  * sender_id : UUID <<FK>>
+  * receiver_id : UUID <<FK>>
+  content : text
+  read : boolean
+  created_at : datetime
+}
+
+' Relationships with Crow's Foot notation
+User ||--|| Profile : "has"
+User ||--o| Student : "can be"
+User ||--o| Supervisor : "can be"
+User ||--o{ Message : "sends"
+User ||--o{ Message : "receives"
+User ||--o{ Evaluation : "evaluates"
+
+Student ||--o| VerificationStatus : "has"
+Student ||--o{ Attachment : "participates in"
+Student ||--o{ SupervisorAssignment : "assigned to"
+Student ||--o{ WeeklyLog : "writes"
+Student ||--o{ Evaluation : "evaluated in"
+Student ||--o{ Reimbursement : "claims"
+
+Supervisor ||--o{ SupervisorAssignment : "supervises"
+Supervisor ||--o{ Attachment : "oversees"
+Supervisor ||--o{ Evaluation : "conducts"
+Supervisor ||--o{ Reimbursement : "approves"
+
+Company ||--o{ Attachment : "hosts"
+Company ||--o{ Reimbursement : "processes"
+
+Attachment ||--o{ Evaluation : "subject of"
+
+@enduml

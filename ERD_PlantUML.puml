@@ -1,0 +1,56 @@
+@startuml Student_Industrial_Attachment_ERD
+
+!define ENTITY(name,desc) class name as "desc" << (E,#FFAAAA) >>
+!define RELATIONSHIP(from,to,label) from ||--o{ to : label
+
+' Entities
+ENTITY(User, "User\n====\nid: UUID (PK)\nemail: string (UK)\nusername: string\nfirst_name: string\nlast_name: string\nrole: string\ncreated_at: datetime\nupdated_at: datetime")
+
+ENTITY(Profile, "Profile\n====\nid: UUID (PK)\nuser_id: UUID (FK)\nfirst_name: string\nlast_name: string\nphone_number: string\ncreated_at: datetime\nupdated_at: datetime")
+
+ENTITY(Student, "Student\n====\nid: UUID (PK)\nuser_id: UUID (FK)\nstudent_id: string (UK)\nprogram: string\nprogram_type: string\nfaculty: string\ndepartment: string\nyear_of_study: int\nsemester: int\nattachment_period: string\nphone_number: string\nfinal_grade: decimal\ngrade_calculation_details: json\ncreated_at: datetime\nupdated_at: datetime")
+
+ENTITY(Supervisor, "Supervisor\n====\nid: UUID (PK)\nuser_id: UUID (FK)\ndepartment: string\ntitle: string\ncreated_at: datetime\nupdated_at: datetime")
+
+ENTITY(Company, "Company\n====\nid: UUID (PK)\nname: string\nlocation: string\nindustry: string\ndescription: string\naddress: string\ncontact_email: string\ncontact_phone: string\ncreated_at: datetime\nupdated_at: datetime")
+
+ENTITY(Attachment, "Attachment\n====\nid: UUID (PK)\nstudent_id: UUID (FK)\ncompany_id: UUID (FK)\nsupervisor_id: UUID (FK)\nstart_date: date\nend_date: date\nstatus: string\naddress: string\ncreated_at: datetime\nupdated_at: datetime")
+
+ENTITY(SupervisorAssignment, "SupervisorAssignment\n====\nid: UUID (PK)\nstudent_id: UUID (FK)\nsupervisor_id: UUID (FK)\nstatus: string\ncreated_at: datetime\nupdated_at: datetime")
+
+ENTITY(VerificationStatus, "VerificationStatus\n====\nid: UUID (PK)\nstudent_id: UUID (FK)\nis_verified: boolean\nverification_date: datetime\nverification_details: json\nfee_verified: boolean\nfee_verification_date: datetime\ncreated_at: datetime\nupdated_at: datetime")
+
+ENTITY(WeeklyLog, "WeeklyLog\n====\nid: UUID (PK)\nstudent_id: UUID (FK)\nweek_number: int\ndate: date\nday: string\ntask_assigned: text\nattachee_remarks: text\ntrainer_remarks: text\nsupervisor_remarks: text\ntrainer_signature: text\nsupervisor_signature: text\ncreated_at: datetime\nupdated_at: datetime")
+
+ENTITY(Evaluation, "Evaluation\n====\nid: UUID (PK)\nattachment_id: UUID (FK)\nstudent_id: UUID (FK)\nsupervisor_id: UUID (FK)\nevaluator_id: UUID (FK)\nevaluation_date: date\nperformance_rating: int\navailability_of_documents: int\norganization_of_logbook: int\nadaptability: int\nteamwork: int\naccomplishment: int\npresence: int\ncommunication_skills: int\nmannerism: int\nunderstanding_of_tasks: int\noral_presentation: int\ntotal: int\ncomments: text\noverall_assessment: text\ncreated_at: datetime\nupdated_at: datetime")
+
+ENTITY(Reimbursement, "Reimbursement\n====\nid: UUID (PK)\nstudent_id: UUID (FK)\ncompany_id: UUID (FK)\nsupervisor_id: UUID (FK)\namount: decimal\ndistance: decimal\nrate: decimal\nlunch: decimal\nsupervision_visits: int\nstatus: string\ncreated_at: datetime\nupdated_at: datetime")
+
+ENTITY(Message, "Message\n====\nid: UUID (PK)\nsender_id: UUID (FK)\nreceiver_id: UUID (FK)\ncontent: text\nread: boolean\ncreated_at: datetime")
+
+' Relationships
+User ||--|| Profile : "has"
+User ||--o| Student : "can be"
+User ||--o| Supervisor : "can be"
+User ||--o{ Message : "sends"
+User ||--o{ Message : "receives"
+User ||--o{ Evaluation : "evaluates"
+
+Student ||--o| VerificationStatus : "has"
+Student ||--o{ Attachment : "has"
+Student ||--o{ SupervisorAssignment : "assigned to"
+Student ||--o{ WeeklyLog : "writes"
+Student ||--o{ Evaluation : "evaluated"
+Student ||--o{ Reimbursement : "claims"
+
+Supervisor ||--o{ SupervisorAssignment : "supervises"
+Supervisor ||--o{ Attachment : "supervises"
+Supervisor ||--o{ Evaluation : "conducts"
+Supervisor ||--o{ Reimbursement : "approves"
+
+Company ||--o{ Attachment : "hosts"
+Company ||--o{ Reimbursement : "reimburses"
+
+Attachment ||--o{ Evaluation : "evaluated for"
+
+@enduml

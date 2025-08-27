@@ -1,0 +1,212 @@
+// Student Industrial Attachment Management System
+// DBDiagram.io Schema - Paste this at https://dbdiagram.io/
+
+Table profiles {
+  id uuid [pk, default: `uuid_generate_v4()`]
+  user_id uuid [ref: > auth.users.id, unique, not null]
+  first_name text [not null]
+  last_name text [not null]
+  email text [unique, not null]
+  role user_role [not null, default: 'student']
+  phone_number text
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+}
+
+Table students {
+  id uuid [pk, default: `uuid_generate_v4()`]
+  user_id uuid [ref: > auth.users.id, unique, not null]
+  student_id text [unique, not null]
+  program text [not null]
+  program_type program_type [default: 'degree']
+  faculty text
+  department text
+  year_of_study integer [not null]
+  semester semester_type [default: '1']
+  attachment_period attachment_period
+  phone_number text
+  final_grade decimal(5,2)
+  grade_calculation_details jsonb
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+}
+
+Table supervisors {
+  id uuid [pk, default: `uuid_generate_v4()`]
+  user_id uuid [ref: > auth.users.id, unique, not null]
+  department text
+  title text
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+}
+
+Table companies {
+  id uuid [pk, default: `uuid_generate_v4()`]
+  name text [not null]
+  location text [not null]
+  industry text
+  description text
+  address text
+  contact_email text
+  contact_phone text
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+}
+
+Table attachments {
+  id uuid [pk, default: `uuid_generate_v4()`]
+  student_id uuid [ref: > students.id, not null]
+  company_id uuid [ref: > companies.id, not null]
+  supervisor_id uuid [ref: > supervisors.id]
+  start_date date [not null]
+  end_date date [not null]
+  status attachment_status [default: 'pending']
+  address text
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+}
+
+Table supervisor_assignments {
+  id uuid [pk, default: `uuid_generate_v4()`]
+  student_id uuid [ref: > students.id, not null]
+  supervisor_id uuid [ref: > supervisors.id, not null]
+  status assignment_status [default: 'active']
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+  
+  indexes {
+    (student_id, supervisor_id) [unique]
+  }
+}
+
+Table verification_status {
+  id uuid [pk, default: `uuid_generate_v4()`]
+  student_id uuid [ref: - students.id, unique, not null]
+  is_verified boolean [default: false]
+  verification_date timestamptz
+  verification_details jsonb
+  fee_verified boolean [default: false]
+  fee_verification_date timestamptz
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+}
+
+Table weekly_logs {
+  id uuid [pk, default: `uuid_generate_v4()`]
+  student_id uuid [ref: > students.id, not null]
+  week_number integer [not null]
+  date date [not null]
+  day text [not null]
+  task_assigned text
+  attachee_remarks text
+  trainer_remarks text
+  supervisor_remarks text
+  trainer_signature text
+  supervisor_signature text
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+  
+  indexes {
+    (student_id, week_number, date) [unique]
+  }
+}
+
+Table evaluations {
+  id uuid [pk, default: `uuid_generate_v4()`]
+  attachment_id uuid [ref: > attachments.id]
+  student_id uuid [ref: > students.id, not null]
+  supervisor_id uuid [ref: > supervisors.id, not null]
+  evaluator_id uuid [ref: > auth.users.id, not null]
+  evaluation_date date [not null]
+  performance_rating integer
+  availability_of_documents integer
+  organization_of_logbook integer
+  adaptability integer
+  teamwork integer
+  accomplishment integer
+  presence integer
+  communication_skills integer
+  mannerism integer
+  understanding_of_tasks integer
+  oral_presentation integer
+  total integer
+  comments text
+  overall_assessment text
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+}
+
+Table reimbursements {
+  id uuid [pk, default: `uuid_generate_v4()`]
+  student_id uuid [ref: > students.id, not null]
+  company_id uuid [ref: > companies.id, not null]
+  supervisor_id uuid [ref: > supervisors.id]
+  amount decimal(10,2) [not null]
+  distance decimal(10,2) [not null]
+  rate decimal(10,2) [not null]
+  lunch decimal(10,2) [not null]
+  supervision_visits integer [default: 1]
+  status reimbursement_status [default: 'pending']
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+}
+
+Table messages {
+  id uuid [pk, default: `uuid_generate_v4()`]
+  sender_id uuid [ref: > auth.users.id, not null]
+  receiver_id uuid [ref: > auth.users.id, not null]
+  content text [not null]
+  read boolean [default: false]
+  created_at timestamptz [default: `now()`]
+}
+
+// Reference table for Supabase auth
+Table auth.users {
+  id uuid [pk]
+  email text
+  // Other Supabase auth fields...
+}
+
+// Enums
+Enum user_role {
+  admin
+  student
+  supervisor
+  dean
+}
+
+Enum program_type {
+  degree
+  diploma
+}
+
+Enum semester_type {
+  "1"
+  "2"
+}
+
+Enum attachment_period {
+  "Jan-Apr"
+  "May-Aug"
+  "Sep-Dec"
+}
+
+Enum assignment_status {
+  active
+  pending
+  inactive
+}
+
+Enum attachment_status {
+  pending
+  approved
+  rejected
+  completed
+}
+
+Enum reimbursement_status {
+  pending
+  approved
+  rejected
+  paid
+}

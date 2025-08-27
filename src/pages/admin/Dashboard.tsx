@@ -369,7 +369,11 @@ const AdminDashboard = () => {
   // Function to get coordinates from address using Google Maps Geocoding API
   const getCoordinates = async (address: string) => {
     try {
-      const apiKey = "AIzaSyDckZpKLFR7Oij4fkJ20oiFfguED3YaWIw";
+      const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+      if (!apiKey) {
+        console.error('Google Maps API key not configured');
+        return null;
+      }
       const response = await fetch(
         `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${apiKey}`
       );

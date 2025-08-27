@@ -54,7 +54,7 @@ This is the Django backend for the Industrial Attachment Management System (IAMS
 - `/api/messages/` - Internal messaging
 
 ### Admin Interface
-Visit `http://localhost:8000/admin/` to access the Django admin interface.
+Visit your Django server's `/admin/` endpoint to access the Django admin interface.
 
 ## Key Features
 
