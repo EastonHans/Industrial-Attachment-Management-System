@@ -97,13 +97,12 @@ The system includes comprehensive ERD documentation:
 - `ERD_Diagram.md` - Mermaid format
 - `ERD_PlantUML.puml` - PlantUML format
 - `ERD_PlantUML_CrowsFoot.puml` - Crow's Foot notation
-- `supabase_complete_setup.sql` - Complete database schema
+
 
 ## 🚀 Deployment
 
 ### Database Options
 1. **PostgreSQL** (recommended for production)
-2. **Supabase** (use provided SQL scripts)
 
 ### Environment Variables
 Ensure all required environment variables are set in production:
@@ -130,9 +129,6 @@ Ensure all required environment variables are set in production:
 3. Follow security guidelines in `SECURITY.md`
 4. Submit a pull request
 
-## 📄 License
-
-This project is licensed under the MIT License.
 
 ## 🆘 Support
 
